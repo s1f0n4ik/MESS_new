@@ -1,0 +1,25 @@
+# Python
+backend/__pycache__/
+backend/.venv/
+**/__pycache__/
+*.pyc
+
+# Node
+**/node_modules/
+**/dist/
+**/.vite/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Tauri / Rust
+desktop/src-tauri/target/
+**/target/
+
+# Env / IDE / OS
+.env
+.env.*
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
