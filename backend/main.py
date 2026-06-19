@@ -1,14 +1,17 @@
-from pathlib import Path
-from typing import Literal, Optional
-from fastapi import FastAPI
+import asyncio
+import json
+from copy import deepcopy
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from pathlib import Path
 ROLES = ["pc1", "pc2", "pc3", "pc4"]
+CLICK_THRESHOLD = 17
 
 app = FastAPI(title="Postcards Backend")
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,42 +22,74 @@ app.add_middleware(
 
 PDF_DIR = Path(__file__).parent / "pdfs"
 PDF_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/pdfs", StaticFiles(directory=PDF_DIR), name="pdfs")
+app.mount("/pdfs", StaticFiles(directory=str(PDF_DIR)), name="pdfs")
 
 
-def empty_flips():
-    return {str(i): False for i in range(8)}
+def initial_state():
+    return {
+        "stateVersion": 1,
+        "clicksByRole": {r: 0 for r in ROLES},
+        "clickScenarioLockedByRole": {r: False for r in ROLES},
+        "flippedCardsByRole": {r: {str(i): False for i in range(8)} for r in ROLES},
+        "pdfsByRole": {"pc1": "pc1.pdf", "pc2": "pc2.pdf", "pc3": "pc3.pdf", "pc4": "pc4.pdf"},
+        "pdfWindow": {"visible": False, "role": "pc1", "pdfFile": "pc1.pdf", "token": ""},
+        "scenario": {
+            "active": False,
+            "triggerRole": None,
+            "currentRole": None,
+            "openRoles": {r: False for r in ROLES},
+            "popupEpoch": 0,
+        },
+    }
 
 
-STATE = {
-    "stateVersion": 1,
-    "clicksByRole": {r: 0 for r in ROLES},
-    "flippedCardsByRole": {r: empty_flips() for r in ROLES},
-    "pdfsByRole": {
-        "pc1": "pc1.pdf",
-        "pc2": "pc2.pdf",
-        "pc3": "pc3.pdf",
-        "pc4": "pc4.pdf",
-    },
-    "pdfWindow": {
-        "visible": False,
-        "role": "pc1",
-        "pdfFile": "pc1.pdf",
-        "token": "",
-    },
-}
+STATE = initial_state()
+SUBSCRIBERS: set[asyncio.Queue] = set()
 
 
-def bump():
+def clone_state():
+    return deepcopy(STATE)
+
+
+async def broadcast(reason: str):
+    payload = {"type": "state", "reason": reason, "payload": clone_state()}
+    dead = []
+    for q in SUBSCRIBERS:
+        try:
+            q.put_nowait(payload)
+        except Exception:
+            dead.append(q)
+    for q in dead:
+        SUBSCRIBERS.discard(q)
+
+
+def bump_version():
     STATE["stateVersion"] += 1
 
 
-class Action(BaseModel):
-    type: Literal["card_click", "reset_clicks", "open_pdf", "close_pdf", "set_pdf_for_role"]
-    role: Optional[str] = None
-    cardIndex: Optional[int] = None
-    pdfFile: Optional[str] = None
-    targetRole: Optional[str] = None
+def open_role(role: str):
+    STATE["scenario"]["openRoles"][role] = True
+    STATE["scenario"]["currentRole"] = role
+    STATE["pdfWindow"]["visible"] = True
+    STATE["pdfWindow"]["role"] = role
+    STATE["pdfWindow"]["pdfFile"] = STATE["pdfsByRole"][role]
+    STATE["pdfWindow"]["token"] = f'{STATE["scenario"]["popupEpoch"]}:{role}'
+
+
+def close_role(role: str):
+    STATE["scenario"]["openRoles"][role] = False
+    if role == STATE["scenario"]["currentRole"]:
+        STATE["pdfWindow"]["visible"] = False
+
+
+def start_scenario(trigger_role: str):
+    STATE["scenario"]["active"] = True
+    STATE["scenario"]["triggerRole"] = trigger_role
+    STATE["scenario"]["popupEpoch"] += 1
+    for r in ROLES:
+        STATE["scenario"]["openRoles"][r] = False
+    # как в исходной логике — старт всегда с pc1
+    open_role("pc1")
 
 
 @app.get("/api/health")
@@ -64,55 +99,90 @@ def health():
 
 @app.get("/api/state")
 def get_state():
-    return STATE
+    return clone_state()
 
 
-@app.get("/api/pdfs")
-def get_pdfs():
-    files = sorted([p.name for p in PDF_DIR.glob("*.pdf")])
-    return {"files": files}
+@app.get("/api/stream")
+async def stream(request: Request):
+    q: asyncio.Queue = asyncio.Queue()
+    SUBSCRIBERS.add(q)
+
+    async def event_gen():
+        # initial snapshot
+        first = {"type": "state", "reason": "initial", "payload": clone_state()}
+        yield f"data: {json.dumps(first, ensure_ascii=False)}\n\n"
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=15)
+                    yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+        finally:
+            SUBSCRIBERS.discard(q)
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+class ActionBody(BaseModel):
+    type: str
+    payload: dict = {}
 
 
 @app.post("/api/action")
-def apply_action(action: Action):
-    role = action.role if action.role in ROLES else "pc1"
+async def action(body: ActionBody):
+    t = body.type
+    p = body.payload or {}
+    role = p.get("role", "pc1")
+    if role not in ROLES:
+        role = "pc1"
 
-    if action.type == "card_click":
-        idx = max(0, min(7, int(action.cardIndex or 0)))
-        key = str(idx)
+    if t == "click_card":
+        card_idx = str(int(p.get("cardIndex", 0)))
+        current = STATE["flippedCardsByRole"][role].get(card_idx, False)
+        STATE["flippedCardsByRole"][role][card_idx] = not current
         STATE["clicksByRole"][role] += 1
-        STATE["flippedCardsByRole"][role][key] = not STATE["flippedCardsByRole"][role][key]
-        bump()
-        return {"ok": True, "stateVersion": STATE["stateVersion"]}
 
-    if action.type == "reset_clicks":
-        STATE["clicksByRole"][role] = 0
-        STATE["flippedCardsByRole"][role] = empty_flips()
-        bump()
-        return {"ok": True, "stateVersion": STATE["stateVersion"]}
+        if (
+            not STATE["scenario"]["active"]
+            and not STATE["clickScenarioLockedByRole"][role]
+            and STATE["clicksByRole"][role] >= CLICK_THRESHOLD
+        ):
+            STATE["clickScenarioLockedByRole"][role] = True
+            start_scenario(trigger_role=role)
 
-    if action.type == "open_pdf":
-        pdf = action.pdfFile or STATE["pdfsByRole"][role]
-        STATE["pdfWindow"] = {
-            "visible": True,
-            "role": role,
-            "pdfFile": pdf,
-            "token": f"{STATE['stateVersion']+1}:{role}:{pdf}",
-        }
-        bump()
-        return {"ok": True, "stateVersion": STATE["stateVersion"]}
+        bump_version()
+        await broadcast("click_card")
+        return {"ok": True}
 
-    if action.type == "close_pdf":
-        STATE["pdfWindow"]["visible"] = False
-        STATE["pdfWindow"]["token"] = f"{STATE['stateVersion']+1}:close"
-        bump()
-        return {"ok": True, "stateVersion": STATE["stateVersion"]}
+    if t == "open_role_popup":
+        open_role(role)
+        bump_version()
+        await broadcast("open_role_popup")
+        return {"ok": True}
 
-    if action.type == "set_pdf_for_role":
-        tr = action.targetRole if action.targetRole in ROLES else role
-        if action.pdfFile:
-            STATE["pdfsByRole"][tr] = action.pdfFile
-            bump()
-        return {"ok": True, "stateVersion": STATE["stateVersion"]}
+    if t == "close_role_popup":
+        close_role(role)
+        bump_version()
+        await broadcast("close_role_popup")
+        return {"ok": True}
 
-    return {"ok": False}
+    if t == "launch":
+        # переход по кругу
+        cur = STATE["scenario"]["currentRole"] or "pc1"
+        i = ROLES.index(cur)
+        nxt = ROLES[(i + 1) % len(ROLES)]
+        open_role(nxt)
+        bump_version()
+        await broadcast("launch")
+        return {"ok": True}
+
+    if t == "reset_all":
+        STATE.clear()
+        STATE.update(initial_state())
+        await broadcast("reset_all")
+        return {"ok": True}
+
+    return {"ok": False, "error": f"Unknown action: {t}"}
