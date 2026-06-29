@@ -9,14 +9,9 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
     proxy: {
-      '/api': {
-        target: API_TARGET,
-        changeOrigin: true,
-      },
-      '/pdfs': {
-        target: API_TARGET,
-        changeOrigin: true,
-      },
+      '/api':  { target: API_TARGET, changeOrigin: true },
+      '/pdfs': { target: API_TARGET, changeOrigin: true },
+      '/ws':   { target: API_TARGET, changeOrigin: true, ws: true },
     },
   },
 })
