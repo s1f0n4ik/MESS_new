@@ -8,10 +8,10 @@
 - [x] Выпилить SSE (`/api/stream`) либо явно решить роли двух транспортов — сейчас живут оба.
 - [x] Починить «дёргающиеся» WS-соединения (open→closed→open): корректный teardown в useEffect, проверка StrictMode, дебаунс reconnect.
 - [ ] identify расширить: localIps, wantsServer.
-- [ ] Координатор ведёт список подключённых устройств (connectedDevices) + lastSeen.
+- [x] Координатор ведёт список подключённых устройств (connectedDevices) + lastSeen.
 - [ ] Zeroconf/mDNS discovery координатора + ручной ввод IP (serverHost) как fallback.
-- [ ] Роль клиента (pc1..pc4) как настройка, а не хардкод `?role=pc1`.
-- [ ] Reconnect-логика на клиенте, статус online/offline.
+- [x] Роль клиента (pc1..pc4) как настройка, а не хардкод `?role=pc1`.
+- [~] Reconnect-логика на клиенте, статус online/offline.
 
 ## EPIC B — Логика сценария и волн (ядро, самое тонкое)
 - [x] Заменить простой круг `launch` на модель волн: waveIndex (1..4), waveSettled (открыты РОВНО pc1..pcN), popupEpoch, popupPage.
@@ -26,7 +26,6 @@
       currentPopupPayload (тот даёт ровно один файл на окно). Решить в EPIC C, не
       смешивать с автоматикой волн. pdfWindowsByRole на координаторе НЕ нужен, пока нет
       per-окно закладок — резолв per-client по myRole закрывает основной сценарий.
-- [ ] pdfWindowsByRole вместо singleton pdfWindow (у каждого окна своя activeBookmark).
 - [ ] Таймеры на координаторе: 2 минуты между кругами 2–4; настраиваемые n сек для возврата pc1 в конце 1-го круга.
 
 ## EPIC C — Управление окнами (Tauri, нативно)
@@ -50,11 +49,27 @@
 - [ ] Включение/выключение аудио в настройках.
 
 ## EPIC F — MIDI
-- [ ] Web MIDI in/out, выбор устройств, канал.
-- [ ] Маппинг нот: launch / open pcX / close pcX / minimizeAll / output.
-- [ ] Реакция на входящие ноты → действия сценария.
-- [ ] Исходящая нота при срабатывании сценария по клик-порогу.
-- [ ] MIDI-мониторинг в админке, тест-отправка, фидбек статуса.
+- [x] Выбор конкретного MIDI input/output в UI, с дефолтом `PC-10` при наличии.
+- [x] Слушать только выбранный MIDI input, а не все inputs сразу.
+- [x] Фильтр по MIDI-каналу (`channel = 2` по legacy-конфигу).
+- [x] Предзаполнение legacy-маппинга:
+  - launch=60
+  - open: pc1=61, pc2=63, pc3=65, pc4=67
+  - close: pc1=62, pc2=64, pc3=66, pc4=68
+  - minimizeAll=69
+  - output=72
+  - velocity=100
+  - duration=180
+- [ ] Дедупликация входящих MIDI-сообщений (одинаковые noteOn за короткое окно времени).
+- [x] Привязка MIDI note -> sendAction(action, payload).
+- [x] Поддержка legacy-экшенов:
+  - open_role_popup(pc1..pc4)
+  - close_role_popup(pc1..pc4)
+  - launch
+  - toggle_force_open_all
+  - reset_scenario
+  - minimize_all_windows
+- [ ] Тест-кнопка MIDI output через выбранный output (`PC-10`).
 
 ## EPIC G — Окно экфрасисов (popup 2052×966)
 - [ ] Разворот: 2 страницы (картинка + side-text + bottom-text), 8 разворотов, навигация.

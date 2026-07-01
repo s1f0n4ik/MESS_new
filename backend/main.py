@@ -416,6 +416,10 @@ async def apply_action(t: str, p: dict):
         bump_version()
         await hub.broadcast("hard_reset")
         return {"ok": True}
+    if t == "minimize_all_windows":
+        bump_version()
+        await hub.broadcast("minimize_all_windows")
+        return {"ok": True, "noop": True}
     return {"ok": False, "error": f"Unknown action: {t}"}
 
 

@@ -3,7 +3,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: postcards-backend
+    container_name: postcards-backend1
     working_dir: /app
     command: uvicorn main:app --host 0.0.0.0 --port 8787 --reload
     volumes:
@@ -17,7 +17,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: postcards-frontend
+    container_name: postcards-frontend1
     working_dir: /app
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
     volumes:
