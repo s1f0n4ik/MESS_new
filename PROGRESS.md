@@ -79,7 +79,7 @@ Frontend:
   (position:fixed, inset:0, z-index:50) когда payload.visible. Шапка __meta показывает
   myRole/source/pdfFile + кнопка ✕ close (проп onClose → close_role_popup).
 - `App.jsx`: подключён `<PdfWindowLayer state={state} onClose={...} />` последним в дереве.
-- Роль берётся из `?role=pcX` (временно, до EPIC A).
+- Роль берётся из `role.js` (`localStorage -> ?role=pcX -> pc1`), единый источник истины.
 
 Backend:
 - В этом слайсе НЕ менялся. Поля `pdfsByRole` (pc1.pdf..pc4.pdf) и `scenario`
@@ -99,10 +99,8 @@ Backend:
 ## Известные временные решения (тех-долг, см. BACKLOG)
 - Управление окнами через `window.open`, не через Tauri. Заголовок/размеры/позиция не контролируются.
 - Состояние не персистится (нет local-settings.json / global-settings.json).
-- Нет MIDI, нет аудио, нет popup-экфрасисов, нет админки, нет сети/discovery.
+- Нет аудио, нет popup-экфрасисов, нет админки, нет сети/discovery.
 - WS-соединения в dev «дёргаются» (open→closed→open) — подозрение на React StrictMode double-mount и/или незаглушённый reconnect. Проверить очистку в useEffect.
-- Роль всё ещё хардкод/из query (`?role=pc1`), не из настроек.
-- Выбор источника PDF по waveSettled (своя pcX.pdf vs pcN.pdf волны) ещё не реализован — pdfWindow.pdfFile сейчас всегда = pdf текущей роли. Slice 6.
 - pdfWindow — пока только «намерение» в состоянии, исполнение окнами через Tauri не подключено (EPIC C).
 
 

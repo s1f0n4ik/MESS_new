@@ -11,6 +11,18 @@ from pydantic import BaseModel
 ROLES = ["pc1", "pc2", "pc3", "pc4"]
 CLICK_THRESHOLD = 17
 
+PHASE_IDLE = "idle"
+PHASE_PENDULUM = "pendulum"
+PHASE_DWELL = "dwell"
+PHASE_FINAL_HOLD = "final_hold"
+PHASE_FORCE_OPEN_ALL = "force_open_all"
+
+PENDULUM_ROUTE = ["pc1", "pc2", "pc3", "pc4", "pc3", "pc2", "pc1"]
+
+DEFAULT_DWELL_SECONDS = 120.0
+DEFAULT_RETURN_DELAY_SECONDS = 0.0
+SCENARIO_TICK_INTERVAL = 0.5
+
 # --- EPIC A2: пороги живости устройств ---
 DEVICE_STALE_SECONDS = 30.0      # не видели дольше -> online:false
 DEVICE_SWEEP_INTERVAL = 5.0      # как часто фоновая задача проверяет
@@ -41,6 +53,12 @@ def initial_state():
             "restoreAfterForce": None,
             "waveIndex": 0,
             "waveSettled": False,
+            "pendulumStep": None,
+            "dwellStartedAt": None,
+            "dwellNextAt": None,
+            "finalHoldRole": "pc4",
+            "returnDelaySeconds": DEFAULT_RETURN_DELAY_SECONDS,
+            "dwellSeconds": DEFAULT_DWELL_SECONDS,
         },
         "pdfWindow": {
             "visible": False,
@@ -132,6 +150,47 @@ async def device_sweeper():
         pass
 
 
+async def scenario_timer_loop():
+    try:
+        while True:
+            await asyncio.sleep(SCENARIO_TICK_INTERVAL)
+
+            s = STATE["scenario"]
+            if not s["active"] or s["forceOpenAll"]:
+                continue
+
+            changed = False
+            now = now_ts()
+
+            # 1) конец pendulum -> старт dwell
+            if s.get("phase") == PHASE_PENDULUM and s.get("pendulumStep") == len(PENDULUM_ROUTE) - 1:
+                delay = float(s.get("returnDelaySeconds") or 0.0)
+                due_at = s.get("dwellNextAt")
+
+                if due_at is None:
+                    s["dwellStartedAt"] = now
+                    s["dwellNextAt"] = now + max(0.0, delay)
+                    changed = True
+                elif now >= due_at:
+                    settle_into_dwell_wave1()
+                    changed = True
+
+            # 2) dwell timer
+            elif s.get("phase") == PHASE_DWELL:
+                due_at = s.get("dwellNextAt")
+                if due_at is not None and now >= due_at:
+                    prev_phase = s.get("phase")
+                    prev_wave = s.get("waveIndex")
+                    advance_wave({"type": "timer_dwell_advance", "waveIndex": prev_wave})
+                    changed = True
+
+            if changed:
+                bump_version()
+                await hub.broadcast("scenario_timer")
+    except asyncio.CancelledError:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Ядро волн (без изменений относительно Slice 5)
 # ---------------------------------------------------------------------------
@@ -146,25 +205,87 @@ def get_last_open_role():
 
 def recompute_wave_settled():
     s = STATE["scenario"]
-    n = int(s.get("waveIndex") or 0)
-    if not s["active"] or s["forceOpenAll"] or n < 1:
+
+    if not s["active"] or s["forceOpenAll"]:
         s["waveSettled"] = False
         return
-    expected = [f"pc{i + 1}" for i in range(n)]
-    opened = [r for r in ROLES if s["openRoles"].get(r)]
-    s["waveSettled"] = (
-        len(opened) == n
-        and all(s["openRoles"].get(r) is True for r in expected)
-    )
+
+    phase = s.get("phase")
+
+    if phase == PHASE_PENDULUM:
+        step = s.get("pendulumStep")
+        s["waveSettled"] = (step == len(PENDULUM_ROUTE) - 1)
+        return
+
+    if phase in (PHASE_DWELL, PHASE_FINAL_HOLD):
+        n = int(s.get("waveIndex") or 0)
+        if n < 1:
+            s["waveSettled"] = False
+            return
+        expected = [f"pc{i + 1}" for i in range(n)]
+        opened = [r for r in ROLES if s["openRoles"].get(r)]
+        s["waveSettled"] = (
+                len(opened) == n
+                and all(s["openRoles"].get(r) is True for r in expected)
+        )
+        return
+
+    s["waveSettled"] = False
 
 
 def reset_open_roles():
     STATE["scenario"]["openRoles"] = {r: False for r in ROLES}
 
 
+def set_only_open_role(role: str | None):
+    target = sanitize_role(role) if role else None
+    STATE["scenario"]["openRoles"] = {r: (r == target) for r in ROLES}
+    STATE["scenario"]["currentRole"] = target
+
+
+def set_open_roles_prefix(n: int):
+    n = max(0, min(len(ROLES), int(n or 0)))
+    STATE["scenario"]["openRoles"] = {
+        r: (idx < n) for idx, r in enumerate(ROLES)
+    }
+    opened = [r for r in ROLES if STATE["scenario"]["openRoles"][r]]
+    STATE["scenario"]["currentRole"] = opened[-1] if opened else None
+
+
+def clear_scenario_timers():
+    s = STATE["scenario"]
+    s["dwellStartedAt"] = None
+    s["dwellNextAt"] = None
+
+
+def arm_dwell_timer(delay_seconds: float | None = None):
+    s = STATE["scenario"]
+    delay = s.get("dwellSeconds") if delay_seconds is None else delay_seconds
+    delay = float(delay or 0)
+    now = now_ts()
+    s["dwellStartedAt"] = now
+    s["dwellNextAt"] = now + max(0.0, delay)
+
+
+def get_pendulum_role(step: int | None):
+    if step is None:
+        return None
+    if 0 <= step < len(PENDULUM_ROUTE):
+        return PENDULUM_ROUTE[step]
+    return None
+
+
 def sync_pdf_window():
     s = STATE["scenario"]
     cur = s["currentRole"]
+
+    if s.get("forceOpenAll"):
+        STATE["pdfWindow"]["visible"] = True
+        STATE["pdfWindow"]["role"] = "all"
+        STATE["pdfWindow"]["pdfFile"] = None
+        STATE["pdfWindow"]["token"] = f'{s["popupEpoch"]}:all'
+        return
+
     if cur in ROLES and s["openRoles"].get(cur):
         STATE["pdfWindow"]["visible"] = True
         STATE["pdfWindow"]["role"] = cur
@@ -172,48 +293,120 @@ def sync_pdf_window():
         STATE["pdfWindow"]["token"] = f'{s["popupEpoch"]}:{cur}'
     else:
         STATE["pdfWindow"]["visible"] = False
+        STATE["pdfWindow"]["role"] = None
+        STATE["pdfWindow"]["pdfFile"] = None
+        STATE["pdfWindow"]["token"] = None
+
+
+def start_pendulum(trigger: dict | None = None):
+    s = STATE["scenario"]
+    trigger = trigger or {}
+
+    if trigger.get("type") == "click_threshold" and trigger.get("role"):
+        STATE["clickScenarioLockedByRole"][sanitize_role(trigger["role"])] = True
+
+    s["active"] = True
+    s["trigger"] = trigger
+    s["phase"] = PHASE_PENDULUM
+    s["popupEpoch"] += 1
+    s["popupPage"] = 0
+    s["startedAt"] = now_ts()
+    s["forceOpenAll"] = False
+    s["restoreAfterForce"] = None
+
+    s["pendulumStep"] = 0
+    s["waveIndex"] = 1
+    s["finalHoldRole"] = "pc4"
+
+    clear_scenario_timers()
+    set_only_open_role(get_pendulum_role(0))
+
+    recompute_wave_settled()
+    sync_pdf_window()
+
+
+def settle_into_dwell_wave1():
+    s = STATE["scenario"]
+    s["phase"] = PHASE_DWELL
+    s["pendulumStep"] = None
+    s["waveIndex"] = 1
+    set_open_roles_prefix(1)
+    s["popupEpoch"] += 1
+    arm_dwell_timer()
+    recompute_wave_settled()
+    sync_pdf_window()
+
+
+def advance_pendulum(source: dict | None = None):
+    s = STATE["scenario"]
+    if not s["active"] or s["forceOpenAll"]:
+        return
+    if s.get("phase") != PHASE_PENDULUM:
+        return
+
+    step = s.get("pendulumStep")
+    if step is None:
+        step = 0
+
+    next_step = step + 1
+    if next_step >= len(PENDULUM_ROUTE):
+        settle_into_dwell_wave1()
+        return
+
+    s["pendulumStep"] = next_step
+    s["popupEpoch"] += 1
+    set_only_open_role(get_pendulum_role(next_step))
+    recompute_wave_settled()
+    sync_pdf_window()
+
+    if next_step == len(PENDULUM_ROUTE) - 1:
+        # Осели на pc1; следующая логика уже через dwell-таймер.
+        settle_into_dwell_wave1()
 
 
 def start_scenario(trigger: dict, role: str = "pc1"):
-    open_role_name = sanitize_role(role)
-    if trigger and trigger.get("type") == "click_threshold" and trigger.get("role"):
-        STATE["clickScenarioLockedByRole"][sanitize_role(trigger["role"])] = True
-    s = STATE["scenario"]
-    s["active"] = True
-    s["trigger"] = trigger
-    s["phase"] = "manual_midi"
-    s["currentRole"] = open_role_name
-    reset_open_roles()
-    s["openRoles"][open_role_name] = True
-    s["popupEpoch"] += 1
-    s["popupPage"] = 0
-    s["startedAt"] = None
-    s["forceOpenAll"] = False
-    s["restoreAfterForce"] = None
-    s["waveIndex"] = 1
-    s["waveSettled"] = False
-    recompute_wave_settled()
-    sync_pdf_window()
+    start_pendulum(trigger)
 
 
 def open_role(role: str, source: dict | None = None):
     target = sanitize_role(role)
     s = STATE["scenario"]
     source = source or {}
+
     if not s["active"]:
-        start_scenario({"type": "open", "role": target, "source": source}, target)
+        s["active"] = True
+        s["trigger"] = {"type": "open", "role": target, "source": source}
+        s["phase"] = "manual_midi"
+        s["popupEpoch"] += 1
+        s["popupPage"] = 0
+        s["startedAt"] = now_ts()
+        s["forceOpenAll"] = False
+        s["restoreAfterForce"] = None
+        s["pendulumStep"] = None
+        s["waveIndex"] = max(1, int(s.get("waveIndex") or 1))
+        clear_scenario_timers()
+        reset_open_roles()
+        s["openRoles"][target] = True
+        s["currentRole"] = target
+        recompute_wave_settled()
+        sync_pdf_window()
         return
+
     if (
-        not s["forceOpenAll"]
-        and s["currentRole"] == target
-        and s["openRoles"].get(target)
+            not s["forceOpenAll"]
+            and s["currentRole"] == target
+            and s["openRoles"].get(target)
     ):
         return
+
     if s["forceOpenAll"]:
         s["forceOpenAll"] = False
         s["restoreAfterForce"] = None
+
     s["active"] = True
     s["phase"] = "manual_midi"
+    s["pendulumStep"] = None
+    clear_scenario_timers()
     s["currentRole"] = target
     s["openRoles"][target] = True
     recompute_wave_settled()
@@ -230,25 +423,55 @@ def close_role(role: str, source: dict | None = None):
         s["restoreAfterForce"] = None
     if s["openRoles"].get(target):
         s["openRoles"][target] = False
-    if s["currentRole"] == target:
-        s["currentRole"] = get_last_open_role()
-    s["phase"] = "manual_midi"
-    recompute_wave_settled()
-    sync_pdf_window()
+        if s["currentRole"] == target:
+            s["currentRole"] = get_last_open_role()
+        s["phase"] = "manual_midi"
+        s["pendulumStep"] = None
+        clear_scenario_timers()
+        recompute_wave_settled()
+        sync_pdf_window()
 
 
 def advance_wave(source: dict | None = None):
     s = STATE["scenario"]
     source = source or {}
+
     if not s["active"] or s["forceOpenAll"]:
         return
+
+    phase = s.get("phase")
+
+    if phase == PHASE_PENDULUM:
+        advance_pendulum(source)
+        return
+
+    if phase == PHASE_FINAL_HOLD:
+        close_scenario({**source, "type": "launch_close_final_hold"})
+        return
+
+    if phase != PHASE_DWELL:
+        return
+
     prev = int(s.get("waveIndex") or 1)
     if prev >= 4:
-        close_scenario({**source, "type": "launch_close"})
+        s["phase"] = PHASE_FINAL_HOLD
+        set_open_roles_prefix(4)
+        clear_scenario_timers()
+        recompute_wave_settled()
+        sync_pdf_window()
         return
+
     s["waveIndex"] = prev + 1
-    s["waveSettled"] = False
     s["popupEpoch"] += 1
+    set_open_roles_prefix(s["waveIndex"])
+
+    if s["waveIndex"] >= 4:
+        s["phase"] = PHASE_FINAL_HOLD
+        clear_scenario_timers()
+    else:
+        s["phase"] = PHASE_DWELL
+        arm_dwell_timer()
+
     recompute_wave_settled()
     sync_pdf_window()
 
@@ -264,6 +487,9 @@ def toggle_force_open_all(source: dict | None = None):
             "phase": s["phase"],
             "trigger": s["trigger"],
             "waveIndex": s["waveIndex"],
+            "pendulumStep": s.get("pendulumStep"),
+            "dwellStartedAt": s.get("dwellStartedAt"),
+            "dwellNextAt": s.get("dwellNextAt"),
         }
         s["forceOpenAll"] = True
         s["active"] = True
@@ -280,6 +506,9 @@ def toggle_force_open_all(source: dict | None = None):
     if restore and restore.get("active"):
         s["active"] = True
         s["currentRole"] = restore["currentRole"]
+        s["pendulumStep"] = restore.get("pendulumStep")
+        s["dwellStartedAt"] = restore.get("dwellStartedAt")
+        s["dwellNextAt"] = restore.get("dwellNextAt")
         s["openRoles"] = restore.get("openRoles") or {r: False for r in ROLES}
         s["phase"] = restore.get("phase") or "manual_midi"
         s["trigger"] = restore.get("trigger")
@@ -314,6 +543,9 @@ def close_scenario(source: dict | None = None, *, preserve_clicks=True,
     if flips is not None:
         STATE["flippedCardsByRole"] = flips
     STATE["scenario"]["popupEpoch"] = popup_epoch
+    STATE["scenario"]["pendulumStep"] = None
+    STATE["scenario"]["dwellStartedAt"] = None
+    STATE["scenario"]["dwellNextAt"] = None
     STATE["scenario"]["waveSettled"] = False
     recompute_wave_settled()
     sync_pdf_window()
@@ -333,15 +565,18 @@ def hard_reset(source: dict | None = None):
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(device_sweeper())
+    device_task = asyncio.create_task(device_sweeper())
+    scenario_task = asyncio.create_task(scenario_timer_loop())
     try:
         yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        for task in (device_task, scenario_task):
+            task.cancel()
+        for task in (device_task, scenario_task):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(lifespan=lifespan)
