@@ -22,12 +22,32 @@ export default function App() {
   const [connected, setConnected] = useState(false)
   const [, forceTick] = useState(0) // чтобы «Ns назад» обновлялось
   const wsRef = useRef(null)
-  const pdfWinRef = useRef(null)
+  // const pdfWinRef = useRef(null)
+
+    const [globalSettings, setGlobalSettings] = useState({
+    returnDelaySeconds: '',
+    dwellSeconds: '',
+  })
+  const [settingsSaving, setSettingsSaving] = useState(false)
 
   // тик раз в секунду — освежаем relative-время в Devices
   useEffect(() => {
     const id = setInterval(() => forceTick((n) => n + 1), 1000)
     return () => clearInterval(id)
+  }, [])
+    const loadGlobalSettings = async () => {
+    try {
+      const res = await fetch('/api/settings/global')
+      const data = await res.json()
+      setGlobalSettings({
+        returnDelaySeconds: String(data?.returnDelaySeconds ?? ''),
+        dwellSeconds: String(data?.dwellSeconds ?? ''),
+      })
+    } catch {}
+  }
+
+  useEffect(() => {
+    loadGlobalSettings()
   }, [])
 
   useEffect(() => {
@@ -105,21 +125,29 @@ export default function App() {
     }
   }
 
-  const openPdfManual = () => {
-    sendAction('open_role_popup', { role })
-    const url = `/pdf-viewer.html?role=${encodeURIComponent(role)}`
-    if (!pdfWinRef.current || pdfWinRef.current.closed) {
-      pdfWinRef.current = window.open(url, `pdf_${role}`, 'width=1200,height=900')
-    } else {
-      pdfWinRef.current.location.href = url
-      pdfWinRef.current.focus()
-    }
-  }
+    const saveGlobalSettings = async () => {
+        setSettingsSaving(true)
+        try {
+          await fetch('/api/settings/global', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              returnDelaySeconds: Number(globalSettings.returnDelaySeconds || 0),
+              dwellSeconds: Number(globalSettings.dwellSeconds || 0),
+            }),
+          })
+        } finally {
+          setSettingsSaving(false)
+        }
+      }
 
-  const closePdfManual = () => {
-    sendAction('close_role_popup', { role })
-    if (pdfWinRef.current && !pdfWinRef.current.closed) pdfWinRef.current.close()
-  }
+  const openPdfManual = () => {
+      sendAction('open_role_popup', { role })
+    }
+
+    const closePdfManual = () => {
+      sendAction('close_role_popup', { role })
+    }
 
   const devices = state?.connectedDevices || {}
 
@@ -185,15 +213,65 @@ export default function App() {
           </button>
         ))}
       </div>
+      <button onClick={() => sendAction('start_pendulum')}>Start pendulum</button>
+      <button onClick={() => sendAction('debug_set_final_hold')}>Debug final_hold</button>
 
-      <div style={{ margin: '8px 0', fontSize: 13, fontFamily: 'monospace' }}>
-        wave: {state?.scenario?.waveIndex ?? 0}
-        {' · settled: '}{String(state?.scenario?.waveSettled ?? false)}
-        {' · active: '}{String(state?.scenario?.active ?? false)}
-        {' · current: '}{state?.scenario?.currentRole ?? '—'}
-        {' · open: '}
-        {ROLES_LIST.filter((r) => state?.scenario?.openRoles?.[r]).join(',') || '—'}
-        {' · epoch: '}{state?.scenario?.popupEpoch ?? 0}
+      <div style={{ margin: '8px 0', fontSize: 13, fontFamily: 'monospace', lineHeight: 1.5 }}>
+          {'phase: '}{state?.scenario?.phase ?? '—'}
+          {' · pendulumStep: '}{String(state?.scenario?.pendulumStep ?? '—')}
+          {' · wave: '}{state?.scenario?.waveIndex ?? 0}
+          {' · settled: '}{String(state?.scenario?.waveSettled ?? false)}
+          {' · active: '}{String(state?.scenario?.active ?? false)}
+          {' · current: '}{state?.scenario?.currentRole ?? '—'}
+          {' · open: '}
+          {ROLES_LIST.filter((r) => state?.scenario?.openRoles?.[r]).join(',') || '—'}
+          {' · epoch: '}{state?.scenario?.popupEpoch ?? 0}
+          <br />
+          {'dwellNextAt: '}{state?.scenario?.dwellNextAt ?? '—'}
+          {' · returnDelaySeconds: '}{state?.scenario?.returnDelaySeconds ?? '—'}
+          {' · dwellSeconds: '}{state?.scenario?.dwellSeconds ?? '—'}
+      </div>
+
+            <div style={{ margin: '12px 0', padding: 12, border: '1px solid #444', borderRadius: 8 }}>
+        <div style={{ fontWeight: 700, marginBottom: 8 }}>Global settings</div>
+
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <label style={{ fontSize: 13 }}>
+            returnDelaySeconds{' '}
+            <input
+              type="number"
+              step="0.1"
+              min="0"
+              value={globalSettings.returnDelaySeconds}
+              onChange={(e) =>
+                setGlobalSettings((s) => ({ ...s, returnDelaySeconds: e.target.value }))
+              }
+              style={{ width: 90 }}
+            />
+          </label>
+
+          <label style={{ fontSize: 13 }}>
+            dwellSeconds{' '}
+            <input
+              type="number"
+              step="0.1"
+              min="0"
+              value={globalSettings.dwellSeconds}
+              onChange={(e) =>
+                setGlobalSettings((s) => ({ ...s, dwellSeconds: e.target.value }))
+              }
+              style={{ width: 90 }}
+            />
+          </label>
+
+          <button onClick={saveGlobalSettings} disabled={settingsSaving}>
+            {settingsSaving ? 'Saving...' : 'Save settings'}
+          </button>
+
+          <button onClick={loadGlobalSettings}>
+            Reload settings
+          </button>
+        </div>
       </div>
 
       <div className="cards">
@@ -214,7 +292,6 @@ export default function App() {
       <PdfWindowLayer
         state={state}
         myRole={role}
-        onClose={() => sendAction('close_role_popup', { role })}
       />
     </div>
   )

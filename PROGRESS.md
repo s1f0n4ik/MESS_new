@@ -175,3 +175,20 @@ Backend:
   `launch`, `open_role_popup`, `close_role_popup`, `toggle_force_open_all`,
   `reset_scenario`, `hard_reset`, `minimize_all_windows`.
 - Добавлена тест-кнопка MIDI output (`note 72`, velocity `100`, duration `180ms`) в выбранный output.
+
+
+## Slice 7 — phase-machine сценария (черновая вертикаль, в работе)
+Backend (`backend/main.py`):
+- Добавлены фазы сценария: `idle`, `pendulum`, `dwell`, `final_hold`, `force_open_all`.
+- Добавлен `pendulumStep` и маршрут `pc1→pc2→pc3→pc4→pc3→pc2→pc1`.
+- Старт сценария переведён на `start_pendulum(...)`.
+- Добавлен серверный `scenario_timer_loop()` в `lifespan`:
+  - завершение pendulum -> переход в dwell;
+  - продвижение dwell по таймеру.
+- Добавлены поля таймингов в state: `returnDelaySeconds`, `dwellSeconds`, `dwellNextAt`, `dwellStartedAt`.
+- Добавлен debug-action `start_pendulum` для ручной проверки phase-machine без 17 кликов.
+
+Статус проверки:
+- Подтверждено: сценарий стартует, фазы и таймеры в state живут.
+- Подтверждено: `launch` участвует в продвижении сценария.
+- Выявлен дефект текущей реализации: переход `pendulum -> dwell` происходит слишком рано, из-за чего финальный шаг маятника (`pendulumStep=6`) почти не наблюдаем в UI. Требуется дочистка Slice 7A.

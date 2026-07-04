@@ -7,6 +7,7 @@ from copy import deepcopy
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from pathlib import Path
 
 ROLES = ["pc1", "pc2", "pc3", "pc4"]
 CLICK_THRESHOLD = 17
@@ -19,18 +20,55 @@ PHASE_FORCE_OPEN_ALL = "force_open_all"
 
 PENDULUM_ROUTE = ["pc1", "pc2", "pc3", "pc4", "pc3", "pc2", "pc1"]
 
-DEFAULT_DWELL_SECONDS = 120.0
-DEFAULT_RETURN_DELAY_SECONDS = 0.0
+DEFAULT_DWELL_SECONDS = 5.0
+DEFAULT_RETURN_DELAY_SECONDS = 1.0
 SCENARIO_TICK_INTERVAL = 0.5
 
 # --- EPIC A2: пороги живости устройств ---
 DEVICE_STALE_SECONDS = 30.0      # не видели дольше -> online:false
 DEVICE_SWEEP_INTERVAL = 5.0      # как часто фоновая задача проверяет
 
+BASE_DIR = Path(__file__).resolve().parent
+GLOBAL_SETTINGS_PATH = BASE_DIR / "global-settings.json"
 
 def now_ts() -> float:
     return time.time()
 
+def default_global_settings():
+    return {
+        "returnDelaySeconds": DEFAULT_RETURN_DELAY_SECONDS,
+        "dwellSeconds": DEFAULT_DWELL_SECONDS,
+    }
+
+
+def load_global_settings():
+    data = default_global_settings()
+    try:
+        if GLOBAL_SETTINGS_PATH.exists():
+            raw = json.loads(GLOBAL_SETTINGS_PATH.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                if "returnDelaySeconds" in raw:
+                    data["returnDelaySeconds"] = float(raw["returnDelaySeconds"])
+                if "dwellSeconds" in raw:
+                    data["dwellSeconds"] = float(raw["dwellSeconds"])
+    except Exception:
+        pass
+    return data
+
+
+def save_global_settings(data: dict):
+    payload = {
+        "returnDelaySeconds": float(data.get("returnDelaySeconds", DEFAULT_RETURN_DELAY_SECONDS) or 0),
+        "dwellSeconds": float(data.get("dwellSeconds", DEFAULT_DWELL_SECONDS) or 0),
+    }
+    GLOBAL_SETTINGS_PATH.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return payload
+
+
+GLOBAL_SETTINGS = load_global_settings()
 
 def initial_state():
     return {
@@ -150,6 +188,37 @@ async def device_sweeper():
         pass
 
 
+def advance_dwell_timer(source: dict | None = None):
+    s = STATE["scenario"]
+    if not s["active"] or s["forceOpenAll"]:
+        return
+    if s.get("phase") != PHASE_DWELL:
+        return
+
+    current_wave = int(s.get("waveIndex") or 1)
+    if current_wave >= 4:
+        s["phase"] = PHASE_FINAL_HOLD
+        set_open_roles_prefix(4)
+        clear_scenario_timers()
+        recompute_wave_settled()
+        sync_pdf_window()
+        return
+
+    next_wave = current_wave + 1
+    s["waveIndex"] = next_wave
+    s["popupEpoch"] += 1
+    set_open_roles_prefix(next_wave)
+
+    if next_wave >= 4:
+        s["phase"] = PHASE_FINAL_HOLD
+        clear_scenario_timers()
+    else:
+        s["phase"] = PHASE_DWELL
+        arm_dwell_timer()
+
+    recompute_wave_settled()
+    sync_pdf_window()
+
 async def scenario_timer_loop():
     try:
         while True:
@@ -162,7 +231,6 @@ async def scenario_timer_loop():
             changed = False
             now = now_ts()
 
-            # 1) конец pendulum -> старт dwell
             if s.get("phase") == PHASE_PENDULUM and s.get("pendulumStep") == len(PENDULUM_ROUTE) - 1:
                 delay = float(s.get("returnDelaySeconds") or 0.0)
                 due_at = s.get("dwellNextAt")
@@ -175,13 +243,10 @@ async def scenario_timer_loop():
                     settle_into_dwell_wave1()
                     changed = True
 
-            # 2) dwell timer
             elif s.get("phase") == PHASE_DWELL:
                 due_at = s.get("dwellNextAt")
                 if due_at is not None and now >= due_at:
-                    prev_phase = s.get("phase")
-                    prev_wave = s.get("waveIndex")
-                    advance_wave({"type": "timer_dwell_advance", "waveIndex": prev_wave})
+                    advance_dwell_timer({"type": "timer_dwell_advance"})
                     changed = True
 
             if changed:
@@ -189,7 +254,6 @@ async def scenario_timer_loop():
                 await hub.broadcast("scenario_timer")
     except asyncio.CancelledError:
         pass
-
 
 # ---------------------------------------------------------------------------
 # Ядро волн (без изменений относительно Slice 5)
@@ -350,19 +414,14 @@ def advance_pendulum(source: dict | None = None):
 
     next_step = step + 1
     if next_step >= len(PENDULUM_ROUTE):
-        settle_into_dwell_wave1()
         return
 
+    next_role = get_pendulum_role(next_step)
     s["pendulumStep"] = next_step
     s["popupEpoch"] += 1
-    set_only_open_role(get_pendulum_role(next_step))
+    set_only_open_role(next_role)
     recompute_wave_settled()
     sync_pdf_window()
-
-    if next_step == len(PENDULUM_ROUTE) - 1:
-        # Осели на pc1; следующая логика уже через dwell-таймер.
-        settle_into_dwell_wave1()
-
 
 def start_scenario(trigger: dict, role: str = "pc1"):
     start_pendulum(trigger)
@@ -446,35 +505,14 @@ def advance_wave(source: dict | None = None):
         return
 
     if phase == PHASE_FINAL_HOLD:
-        close_scenario({**source, "type": "launch_close_final_hold"})
+        source_role = sanitize_role((source or {}).get("role", "pc1"))
+        final_role = sanitize_role(s.get("finalHoldRole") or "pc4")
+        if source_role == final_role:
+            close_scenario({**source, "type": "launch_close_final_hold"})
         return
 
-    if phase != PHASE_DWELL:
+    if phase == PHASE_DWELL:
         return
-
-    prev = int(s.get("waveIndex") or 1)
-    if prev >= 4:
-        s["phase"] = PHASE_FINAL_HOLD
-        set_open_roles_prefix(4)
-        clear_scenario_timers()
-        recompute_wave_settled()
-        sync_pdf_window()
-        return
-
-    s["waveIndex"] = prev + 1
-    s["popupEpoch"] += 1
-    set_open_roles_prefix(s["waveIndex"])
-
-    if s["waveIndex"] >= 4:
-        s["phase"] = PHASE_FINAL_HOLD
-        clear_scenario_timers()
-    else:
-        s["phase"] = PHASE_DWELL
-        arm_dwell_timer()
-
-    recompute_wave_settled()
-    sync_pdf_window()
-
 
 def toggle_force_open_all(source: dict | None = None):
     s = STATE["scenario"]
@@ -655,6 +693,26 @@ async def apply_action(t: str, p: dict):
         bump_version()
         await hub.broadcast("minimize_all_windows")
         return {"ok": True, "noop": True}
+    if t == "start_pendulum":
+        start_pendulum({"type": "manual_debug_start", "role": role})
+        bump_version()
+        await hub.broadcast("start_pendulum")
+        return {"ok": True}
+    if t == "debug_set_final_hold":
+        s = STATE["scenario"]
+        s["active"] = True
+        s["phase"] = PHASE_FINAL_HOLD
+        s["pendulumStep"] = None
+        s["waveIndex"] = 4
+        s["finalHoldRole"] = "pc4"
+        s["popupEpoch"] += 1
+        clear_scenario_timers()
+        set_open_roles_prefix(4)
+        recompute_wave_settled()
+        sync_pdf_window()
+        bump_version()
+        await hub.broadcast("debug_set_final_hold")
+        return {"ok": True}
     return {"ok": False, "error": f"Unknown action: {t}"}
 
 
@@ -662,12 +720,32 @@ class ActionBody(BaseModel):
     type: str
     payload: dict = {}
 
+class GlobalSettingsBody(BaseModel):
+    returnDelaySeconds: float
+    dwellSeconds: float
 
 @app.post("/api/action")
 async def action(body: ActionBody):
     return await apply_action(body.type, body.payload or {})
 
+@app.get("/api/settings/global")
+def get_global_settings():
+    return dict(GLOBAL_SETTINGS)
 
+
+@app.post("/api/settings/global")
+async def set_global_settings(body: GlobalSettingsBody):
+    GLOBAL_SETTINGS["returnDelaySeconds"] = float(body.returnDelaySeconds)
+    GLOBAL_SETTINGS["dwellSeconds"] = float(body.dwellSeconds)
+
+    save_global_settings(GLOBAL_SETTINGS)
+
+    STATE["scenario"]["returnDelaySeconds"] = GLOBAL_SETTINGS["returnDelaySeconds"]
+    STATE["scenario"]["dwellSeconds"] = GLOBAL_SETTINGS["dwellSeconds"]
+
+    bump_version()
+    await hub.broadcast("global_settings_updated")
+    return {"ok": True, "settings": dict(GLOBAL_SETTINGS)}
 # ---------------------------------------------------------------------------
 # WS endpoint
 # ---------------------------------------------------------------------------
