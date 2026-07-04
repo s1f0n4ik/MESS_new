@@ -3,7 +3,7 @@ import json
 import time
 from contextlib import asynccontextmanager
 from copy import deepcopy
-
+from fastapi.staticfiles import StaticFiles
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -625,7 +625,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
+PDF_DIR = BASE_DIR / "pdfs"
+PDF_DIR.mkdir(exist_ok=True)
+app.mount("/pdfs", StaticFiles(directory=str(PDF_DIR)), name="pdfs")
 # ---------------------------------------------------------------------------
 # HTTP
 # ---------------------------------------------------------------------------

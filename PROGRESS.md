@@ -131,6 +131,7 @@ Backend:
 Вывод: - Первый круг = MIDI пошагово (7 шагов маятника). - Круги 2–4 = серверный таймер 2 минуты, накопительно. - Финал = MIDI-нота на pc4 → откат. Архитектурное следствие зафиксировано в BACKLOG (Slice 7): waveIndex и pendulumStep — разные оси, advance_wave описывает только круги 2–4. 
 
 
+
 ## MIDI field-check at installation site
 - Подтверждено: Web MIDI в браузере работает на месте установки.
 - Подтверждено: rtpMIDI-вход виден в системе и в приложении.
@@ -192,3 +193,48 @@ Backend (`backend/main.py`):
 - Подтверждено: сценарий стартует, фазы и таймеры в state живут.
 - Подтверждено: `launch` участвует в продвижении сценария.
 - Выявлен дефект текущей реализации: переход `pendulum -> dwell` происходит слишком рано, из-за чего финальный шаг маятника (`pendulumStep=6`) почти не наблюдаем в UI. Требуется дочистка Slice 7A.
+
+
+## H1/H2 — Персист настроек (готово)
+
+Введён единый слой локальных настроек и подключён серверный слой глобальных.
+
+Frontend:
+- `frontend/src/settings/localSettings.js` — единый модуль локального персиста
+  (localStorage, один JSON-объект вместо россыпи ключей). `loadLocalSettings()` /
+  `saveLocalSettings(patch)` с merge. Хранит: `role`, `serverHost`, `midiInputId`,
+  `midiOutputId`, `midiFilterEnabled`, `midiFilterChannel`.
+- `role.js` переведён на localSettings как источник истины (localStorage -> ?role= -> pc1),
+  без собственных ключей.
+- `App.jsx`:
+  - `serverHost` вынесен в локальные настройки; хелперы `apiUrl()` / `wsUrl()`
+    строят адрес от `serverHost` (fallback — `window.location.host`).
+  - WS-эффект и загрузка/сохранение global settings зависят от `serverHost`
+    (реконнект и перезагрузка настроек при смене хоста).
+  - Блок UI «Local settings» (serverHost + Save & reconnect + Use current host),
+    отдельной карточкой над «Global settings». Поправлена разметка (лишний вложенный
+    `<div>`, из-за которого блоки схлопывались).
+- `MidiPanel.jsx`: выпилены точечные ключи (`INPUT_KEY/OUTPUT_KEY/FILTER_ENABLED_KEY/
+  FILTER_CHANNEL_KEY`) и хелперы `loadBool/saveBool/loadNum/saveNum/loadText/saveText`.
+  Инициализация из `loadLocalSettings()` один раз, все onChange (input/output/фильтр/канал)
+  и автоподбор `PC-10` пишут через `saveLocalSettings({...})`. MIDI-логика не тронута.
+
+Backend:
+- `global-settings.json` на координаторе: `GET/POST /api/settings/global`
+  (`returnDelaySeconds`, `dwellSeconds`), значения грузятся в `GLOBAL_SETTINGS` при старте.
+- Поправлен `initial_state()`: тайминги берутся из `GLOBAL_SETTINGS[...]`, а не из
+  DEFAULT-констант — иначе `close_scenario()` / `hard_reset()` (пересоздают state)
+  сбрасывали сохранённые глобальные значения на дефолты.
+
+Подтверждено вживую:
+- serverHost сохраняется, WS реконнектится на новый хост, action'ы и global settings
+  уходят на него же.
+- MIDI input/output/фильтр/канал переживают перезагрузку; автоподбор `PC-10` при чистом
+  профиле записывается в localSettings.
+- Роль сохраняется как раньше.
+
+Сознательно НЕ сделано (вынесено в BACKLOG, EPIC H):
+- `local-settings.json` как файл на десктопе (сейчас localStorage) — до Tauri-этапа.
+- persist PDF-маппинга и текстов экфрасисов.
+- persist аудио-настроек (аудио ещё нет).
+

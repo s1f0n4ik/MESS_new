@@ -12,66 +12,17 @@ import {
   resetMappingToLegacy,
   actionToSendSpec,
 } from './midiMapping'
-
-const INPUT_KEY = 'postcards_midi_input_v1'
-const OUTPUT_KEY = 'postcards_midi_output_v1'
-const FILTER_ENABLED_KEY = 'postcards_midi_filter_enabled_v1'
-const FILTER_CHANNEL_KEY = 'postcards_midi_filter_channel_v1'
+import { loadLocalSettings, saveLocalSettings } from '../settings/localSettings'
 
 const DEDUPE_WINDOW_MS = 180
-
-function loadBool(key, fallback = false) {
-  try {
-    const v = localStorage.getItem(key)
-    if (v == null) return fallback
-    return v === '1'
-  } catch {
-    return fallback
-  }
-}
-
-function saveBool(key, value) {
-  try {
-    localStorage.setItem(key, value ? '1' : '0')
-  } catch {}
-}
-
-function loadNum(key, fallback) {
-  try {
-    const raw = localStorage.getItem(key)
-    if (raw == null || raw === '') return fallback
-    const n = Number(raw)
-    return Number.isFinite(n) ? n : fallback
-  } catch {
-    return fallback
-  }
-}
-
-function saveNum(key, value) {
-  try {
-    localStorage.setItem(key, String(value))
-  } catch {}
-}
-
-function loadText(key, fallback = '') {
-  try {
-    return localStorage.getItem(key) || fallback
-  } catch {
-    return fallback
-  }
-}
-
-function saveText(key, value) {
-  try {
-    localStorage.setItem(key, value || '')
-  } catch {}
-}
 
 function preferPc10(list) {
   if (!list.length) return ''
   const exact = list.find((x) => x.name === 'PC-10' && x.state === 'connected')
   if (exact) return exact.id
-  const fuzzy = list.find((x) => (x.name || '').toLowerCase().includes('pc-10') && x.state === 'connected')
+  const fuzzy = list.find(
+    (x) => (x.name || '').toLowerCase().includes('pc-10') && x.state === 'connected'
+  )
   if (fuzzy) return fuzzy.id
   const firstConnected = list.find((x) => x.state === 'connected')
   return firstConnected?.id || list[0]?.id || ''
@@ -95,15 +46,21 @@ function sendMidiNote(output, channel, note, velocity, durationMs) {
 }
 
 export function MidiPanel({ sendAction }) {
+  const initial = loadLocalSettings()
+
   const [access, setAccess] = useState('init')
   const [inputs, setInputs] = useState([])
   const [outputs, setOutputs] = useState([])
-  const [selectedInputId, setSelectedInputId] = useState(() => loadText(INPUT_KEY, ''))
-  const [selectedOutputId, setSelectedOutputId] = useState(() => loadText(OUTPUT_KEY, ''))
+  const [selectedInputId, setSelectedInputId] = useState(initial.midiInputId || '')
+  const [selectedOutputId, setSelectedOutputId] = useState(initial.midiOutputId || '')
   const [log, setLog] = useState([])
   const [mapping, setMapping] = useState(loadMapping())
-  const [filterEnabled, setFilterEnabled] = useState(() => loadBool(FILTER_ENABLED_KEY, true))
-  const [filterChannel, setFilterChannel] = useState(() => loadNum(FILTER_CHANNEL_KEY, LEGACY_CHANNEL))
+  const [filterEnabled, setFilterEnabled] = useState(
+    typeof initial.midiFilterEnabled === 'boolean' ? initial.midiFilterEnabled : true
+  )
+  const [filterChannel, setFilterChannel] = useState(
+    Number(initial.midiFilterChannel || LEGACY_CHANNEL)
+  )
 
   const midiRef = useRef(null)
   const learnRef = useRef(null)
@@ -196,7 +153,8 @@ export function MidiPanel({ sendAction }) {
       if (!inputId) return
       const input = ma.inputs.get(inputId)
       if (!input) return
-      input.onmidimessage = (msg) => onMidiRef.current?.(msg, { id: input.id, name: input.name })
+      input.onmidimessage = (msg) =>
+        onMidiRef.current?.(msg, { id: input.id, name: input.name })
     }
 
     const refresh = (ma) => {
@@ -212,7 +170,7 @@ export function MidiPanel({ sendAction }) {
         nextInputId = preferPc10(nextInputs)
         if (nextInputId !== selectedInputId) {
           setSelectedInputId(nextInputId)
-          saveText(INPUT_KEY, nextInputId)
+          saveLocalSettings({ midiInputId: nextInputId })
         }
       }
 
@@ -221,7 +179,7 @@ export function MidiPanel({ sendAction }) {
         nextOutputId = preferPc10(nextOutputs)
         if (nextOutputId !== selectedOutputId) {
           setSelectedOutputId(nextOutputId)
-          saveText(OUTPUT_KEY, nextOutputId)
+          saveLocalSettings({ midiOutputId: nextOutputId })
         }
       }
 
@@ -282,7 +240,13 @@ export function MidiPanel({ sendAction }) {
       return
     }
     const out = ma.outputs.get(selectedOutputId)
-    const ok = sendMidiNote(out, LEGACY_CHANNEL, LEGACY_OUTPUT_NOTE, LEGACY_OUTPUT_VELOCITY, LEGACY_OUTPUT_DURATION_MS)
+    const ok = sendMidiNote(
+      out,
+      LEGACY_CHANNEL,
+      LEGACY_OUTPUT_NOTE,
+      LEGACY_OUTPUT_VELOCITY,
+      LEGACY_OUTPUT_DURATION_MS
+    )
     pushLog({
       tag: ok ? 'output_test_sent' : 'output_test_failed',
       channel: LEGACY_CHANNEL,
@@ -318,7 +282,7 @@ export function MidiPanel({ sendAction }) {
             onChange={(e) => {
               const v = e.target.value
               setSelectedInputId(v)
-              saveText(INPUT_KEY, v)
+              saveLocalSettings({ midiInputId: v })
             }}
           >
             <option value="">— выбрать —</option>
@@ -342,7 +306,7 @@ export function MidiPanel({ sendAction }) {
             onChange={(e) => {
               const v = e.target.value
               setSelectedOutputId(v)
-              saveText(OUTPUT_KEY, v)
+              saveLocalSettings({ midiOutputId: v })
             }}
           >
             <option value="">— выбрать —</option>
@@ -368,7 +332,7 @@ export function MidiPanel({ sendAction }) {
             checked={filterEnabled}
             onChange={(e) => {
               setFilterEnabled(e.target.checked)
-              saveBool(FILTER_ENABLED_KEY, e.target.checked)
+              saveLocalSettings({ midiFilterEnabled: e.target.checked })
             }}
           />{' '}
           фильтровать по каналу
@@ -381,7 +345,7 @@ export function MidiPanel({ sendAction }) {
           onChange={(e) => {
             const v = Number(e.target.value)
             setFilterChannel(v)
-            saveNum(FILTER_CHANNEL_KEY, v)
+            saveLocalSettings({ midiFilterChannel: v })
           }}
           style={{ width: 56, marginLeft: 8 }}
         />
@@ -396,7 +360,10 @@ export function MidiPanel({ sendAction }) {
         <button onClick={resetLegacy} style={{ marginLeft: 8 }}>reset legacy</button>
 
         {mapping.map((r, idx) => (
-          <div key={idx} style={{ display: 'flex', gap: 6, marginTop: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div
+            key={idx}
+            style={{ display: 'flex', gap: 6, marginTop: 4, alignItems: 'center', flexWrap: 'wrap' }}
+          >
             <input
               type="text"
               placeholder="любой"
@@ -420,7 +387,9 @@ export function MidiPanel({ sendAction }) {
               ))}
             </select>
             <button onClick={() => { learnRef.current = idx }}>обучить</button>
-            <button onClick={() => dispatchAction(r.action, r.channel ?? LEGACY_CHANNEL, r.note)}>тест ▶</button>
+            <button onClick={() => dispatchAction(r.action, r.channel ?? LEGACY_CHANNEL, r.note)}>
+              тест ▶
+            </button>
             <button onClick={() => removeRow(idx)}>✕</button>
           </div>
         ))}
