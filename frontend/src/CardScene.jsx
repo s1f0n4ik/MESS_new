@@ -13,14 +13,14 @@ const CARD_HEIGHT = 518
 
 // Жёсткая сетка 2 ряда по 4 (как в старом коде).
 const CARD_POSITIONS = [
-  { left: 334,  top: 210 },
-  { left: 1042, top: 210 },
-  { left: 1750, top: 210 },
-  { left: 2458, top: 210 },
-  { left: 334,  top: 798 },
-  { left: 1042, top: 798 },
-  { left: 1750, top: 798 },
-  { left: 2458, top: 798 },
+  { left: 334,  top: 225 },
+  { left: 1042, top: 225 },
+  { left: 1750, top: 225 },
+  { left: 2458, top: 225 },
+  { left: 334,  top: 783 },
+  { left: 1042, top: 783 },
+  { left: 1750, top: 783 },
+  { left: 2458, top: 783 },
 ]
 
 // Порядок раскладки: 1-2-3-4 / 5-6-7-8 (card N -> позиция N).
