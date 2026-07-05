@@ -349,6 +349,13 @@ export default function App() {
               <div style={{ marginTop: 8 }}>
                 <button onClick={() => sendAction('start_pendulum')}>Start pendulum</button>
                 <button onClick={() => sendAction('debug_set_final_hold')}>Debug final_hold</button>
+                <button
+                  onClick={() => sendAction('start_test_run')}
+                  style={{ fontWeight: 700, background: '#2d6', color: '#000' }}
+                >
+                  ▶ TEST RUN (auto, online only)
+                </button>
+                <button onClick={() => sendAction('stop_test_run')}>■ Stop test</button>
               </div>
 
               <div style={{ margin: '8px 0', fontSize: 13, fontFamily: 'monospace', lineHeight: 1.5 }}>
@@ -365,6 +372,8 @@ export default function App() {
                 {'dwellNextAt: '}{state?.scenario?.dwellNextAt ?? '—'}
                 {' · returnDelaySeconds: '}{state?.scenario?.returnDelaySeconds ?? '—'}
                 {' · dwellSeconds: '}{state?.scenario?.dwellSeconds ?? '—'}
+                {' · testMode: '}{String(state?.scenario?.testMode ?? false)}
+                {' · testRoles: '}{(state?.scenario?.testRoles || []).join(',') || '—'}
               </div>
 
               {/* Local settings */}

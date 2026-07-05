@@ -31,6 +31,9 @@ DEVICE_SWEEP_INTERVAL = 5.0      # как часто фоновая задача
 BASE_DIR = Path(__file__).resolve().parent
 GLOBAL_SETTINGS_PATH = BASE_DIR / "global-settings.json"
 
+DEFAULT_TEST_STEP_SECONDS = 2.0
+DEFAULT_TEST_DWELL_SECONDS = 3.0
+
 def now_ts() -> float:
     return time.time()
 
@@ -97,6 +100,13 @@ def initial_state():
             "finalHoldRole": "pc4",
             "returnDelaySeconds": DEFAULT_RETURN_DELAY_SECONDS,
             "dwellSeconds": DEFAULT_DWELL_SECONDS,
+            "testMode": False,
+            "testRoles": [],  # online-роли на момент старта теста
+            "testPendulumRoute": [],  # динамический маршрут маятника
+            "testNextAt": None,  # когда авто-шаг
+            "testStepSeconds": DEFAULT_TEST_STEP_SECONDS,
+            "testDwellSeconds": DEFAULT_TEST_DWELL_SECONDS,
+
         },
         "pdfWindow": {
             "visible": False,
@@ -117,6 +127,143 @@ def bump_version():
 def clone_state():
     return deepcopy(STATE)
 
+# ---------------------------------------------------------------------------
+# Тест полного сценария (без миди)
+# ---------------------------------------------------------------------------
+
+def get_online_roles():
+    """Online-роли в каноническом порядке pc1..pc4."""
+    devices = STATE["connectedDevices"]
+    online = [r for r in ROLES if devices.get(r, {}).get("online")]
+    return online
+
+
+def build_pendulum_route(active_roles):
+    """[pc1,pc2] -> [pc1,pc2,pc1]; [pc1] -> [pc1]; [] -> []."""
+    if not active_roles:
+        return []
+    if len(active_roles) == 1:
+        return list(active_roles)
+    return list(active_roles) + list(reversed(active_roles[:-1]))
+
+def start_test_run(source: dict | None = None):
+    active = get_online_roles()
+    if not active:
+        # некому показывать — не запускаем
+        return False
+
+    route = build_pendulum_route(active)
+
+    s = STATE["scenario"]
+    s["active"] = True
+    s["trigger"] = source or {"type": "test_run"}
+    s["phase"] = PHASE_PENDULUM
+    s["popupEpoch"] += 1
+    s["popupPage"] = 0
+    s["startedAt"] = now_ts()
+    s["forceOpenAll"] = False
+    s["restoreAfterForce"] = None
+
+    s["testMode"] = True
+    s["testRoles"] = active
+    s["testPendulumRoute"] = route
+    s["pendulumStep"] = 0
+    s["waveIndex"] = 1
+    s["finalHoldRole"] = active[-1]   # последний online, не жёстко pc4
+
+    clear_scenario_timers()
+    set_only_open_role(route[0])
+    arm_test_timer(s["testStepSeconds"])
+
+    recompute_wave_settled()
+    sync_pdf_window()
+    return True
+
+
+def arm_test_timer(delay_seconds: float):
+    s = STATE["scenario"]
+    s["testNextAt"] = now_ts() + max(0.0, float(delay_seconds or 0))
+
+def set_test_prefix(n: int):
+    """Открыть первые n ролей из testRoles (накопительно), остальные закрыть."""
+    s = STATE["scenario"]
+    active = s.get("testRoles") or []
+    n = max(0, min(len(active), int(n or 0)))
+    open_set = set(active[:n])
+    s["openRoles"] = {r: (r in open_set) for r in ROLES}
+    opened = [r for r in active if r in open_set]
+    s["currentRole"] = opened[-1] if opened else None
+
+
+def settle_test_into_dwell():
+    s = STATE["scenario"]
+    s["phase"] = PHASE_DWELL
+    s["pendulumStep"] = None
+    s["waveIndex"] = 1
+    set_test_prefix(1)
+    s["popupEpoch"] += 1
+    arm_test_timer(s["testDwellSeconds"])
+    recompute_wave_settled()
+    sync_pdf_window()
+
+def test_tick_advance():
+    """Один авто-шаг тест-режима. Возвращает True, если что-то изменилось."""
+    s = STATE["scenario"]
+    if not s.get("testMode") or not s["active"] or s["forceOpenAll"]:
+        return False
+
+    phase = s.get("phase")
+
+    # --- Маятник: идём по testPendulumRoute авто-шагами ---
+    if phase == PHASE_PENDULUM:
+        route = s.get("testPendulumRoute") or []
+        step = int(s.get("pendulumStep") or 0)
+        last_index = len(route) - 1
+
+        if step < last_index:
+            next_step = step + 1
+            s["pendulumStep"] = next_step
+            s["popupEpoch"] += 1
+            set_only_open_role(route[next_step])
+            arm_test_timer(s["testStepSeconds"])
+            recompute_wave_settled()
+            sync_pdf_window()
+            return True
+
+        # маятник осел на первом активном ПК -> входим в dwell wave1
+        settle_test_into_dwell()
+        return True
+
+    # --- Dwell-круги: накопление по testRoles ---
+    if phase == PHASE_DWELL:
+        active = s.get("testRoles") or []
+        total = len(active)
+        current = int(s.get("waveIndex") or 1)
+
+        if current >= total:
+            # последний круг осел -> final_hold
+            s["phase"] = PHASE_FINAL_HOLD
+            set_test_prefix(total)
+            arm_test_timer(s["testDwellSeconds"])
+            recompute_wave_settled()
+            sync_pdf_window()
+            return True
+
+        next_wave = current + 1
+        s["waveIndex"] = next_wave
+        s["popupEpoch"] += 1
+        set_test_prefix(next_wave)
+        arm_test_timer(s["testDwellSeconds"])
+        recompute_wave_settled()
+        sync_pdf_window()
+        return True
+
+    # --- Final hold: авто-закрытие (эмуляция MIDI-ноты на последнем ПК) ---
+    if phase == PHASE_FINAL_HOLD:
+        close_scenario({"type": "test_run_auto_close"})
+        return True
+
+    return False
 
 # ---------------------------------------------------------------------------
 # WS hub
@@ -231,10 +378,20 @@ async def scenario_timer_loop():
             changed = False
             now = now_ts()
 
+            # ===== ТЕСТ-РЕЖИМ: автопилот, отдельный таймер testNextAt =====
+            if s.get("testMode"):
+                due_at = s.get("testNextAt")
+                if due_at is not None and now >= due_at:
+                    changed = test_tick_advance()
+                if changed:
+                    bump_version()
+                    await hub.broadcast("test_run_tick")
+                continue
+            # ===== боевые ветки (без изменений) =====
+
             if s.get("phase") == PHASE_PENDULUM and s.get("pendulumStep") == len(PENDULUM_ROUTE) - 1:
                 delay = float(s.get("returnDelaySeconds") or 0.0)
                 due_at = s.get("dwellNextAt")
-
                 if due_at is None:
                     s["dwellStartedAt"] = now
                     s["dwellNextAt"] = now + max(0.0, delay)
@@ -242,7 +399,6 @@ async def scenario_timer_loop():
                 elif now >= due_at:
                     settle_into_dwell_wave1()
                     changed = True
-
             elif s.get("phase") == PHASE_DWELL:
                 due_at = s.get("dwellNextAt")
                 if due_at is not None and now >= due_at:
@@ -276,6 +432,27 @@ def recompute_wave_settled():
 
     phase = s.get("phase")
 
+    # --- ТЕСТ-РЕЖИМ: settled по testRoles, а не по pc1..pcN ---
+    if s.get("testMode"):
+        if phase == PHASE_PENDULUM:
+            route = s.get("testPendulumRoute") or []
+            step = s.get("pendulumStep")
+            s["waveSettled"] = (step is not None and step == len(route) - 1)
+            return
+        if phase in (PHASE_DWELL, PHASE_FINAL_HOLD):
+            active = s.get("testRoles") or []
+            n = int(s.get("waveIndex") or 0)
+            if n < 1:
+                s["waveSettled"] = False
+                return
+            expected = set(active[:n])
+            opened = {r for r in ROLES if s["openRoles"].get(r)}
+            s["waveSettled"] = (opened == expected and len(expected) == n)
+            return
+        s["waveSettled"] = False
+        return
+
+    # --- дальше боевая логика без изменений ---
     if phase == PHASE_PENDULUM:
         step = s.get("pendulumStep")
         s["waveSettled"] = (step == len(PENDULUM_ROUTE) - 1)
@@ -700,6 +877,19 @@ async def apply_action(t: str, p: dict):
         bump_version()
         await hub.broadcast("start_pendulum")
         return {"ok": True}
+
+    if t == "start_test_run":
+        ok = start_test_run({"type": "manual_test_run", "role": role})
+        bump_version()
+        await hub.broadcast("start_test_run")
+        return {"ok": ok, "error": None if ok else "no online devices"}
+
+    if t == "stop_test_run":
+        close_scenario({"type": "manual_test_stop", "role": role})
+        bump_version()
+        await hub.broadcast("stop_test_run")
+        return {"ok": True}
+
     if t == "debug_set_final_hold":
         s = STATE["scenario"]
         s["active"] = True

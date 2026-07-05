@@ -253,3 +253,25 @@ Backend:
 ## 🔜 NEXT — Slice 8 (EPIC E, аудио)
 Цель: 16 типов звуков на ПК, проигрывание по клику карточки, прерывание предыдущего,
 keep-alive для разблокировки автоплея, вкл/выкл в настройках.
+
+
+## Slice 8 — Аудио (EPIC E, готово)
+Frontend:
+- `frontend/src/audio/audioEngine.js` — синглтон аудио-движка. Один переиспользуемый
+  HTMLAudioElement, резкий обрыв предыдущего звука (как в легаси). Методы:
+  `setEnabled(bool)`, `bindUnlock()` (разблокировка автоплея по первому жесту),
+  `startKeepAliveLoop()` / `stopKeepAliveLoop()`, `play(role, n)` (n клампится до 16).
+  Путь звуков: `/cards/audio/{pcX}/cliks{X} type {N}.wav` (pc1 → `cliks1st`).
+- `App.jsx`:
+  - импорт `audioEngine`, `prevClicksRef`;
+  - хук инициализации движка (setEnabled из localSettings + bindUnlock + keep-alive loop);
+  - хук-триггер: звук играет при приросте `state.clicksByRole[role]` (счётчик растёт
+    только на click_card, поэтому reason не нужен — выбран вариант B, WS-обработчик
+    не тронут);
+  - `localSettings.audioEnabled` (дефолт true), тумблер «Звук кликов» в меню (под Devices,
+    виден на всех ролях), `saveLocalAndReconnect` / «Use current host» прокидывают
+    audioEnabled, чтобы не затирать флаг.
+
+Подтверждено вживую:
+- Звук играет по нажатию на всех ПК, по возрастанию type N, предыдущий обрывается.
+- Тумблер выключает/включает звук; состояние переживает reload.
