@@ -238,3 +238,18 @@ Backend:
 - persist PDF-маппинга и текстов экфрасисов.
 - persist аудио-настроек (аудио ещё нет).
 
+
+## EPIC D (частично) — сцена + меню (готово к продолжению)
+- CardScene.jsx: холст 3440×1440 с transform: scale() под экран, CARD_POSITIONS (2×4),
+  реальные картинки /cards/images/front|back/{n}.png, переворот по клику (локально, до reload).
+- Антивандал (частично): contextmenu, F5/F12/Ctrl+R/Ctrl+Shift+IJC/Ctrl+U, userSelect:none,
+  draggable=false. Ctrl+колесо/pinch/auxclick — позже (добьём нативно в Tauri, EPIC C).
+- App.jsx: вся служебка (диагностика/Devices/тулбары/settings/MidiPanel) перенесена
+  в оверлей-меню (position:fixed, zIndex:100), которое тогглится по физической клавише M
+  (e.code === 'KeyM' — работает и в ru, и в en раскладке), Esc — закрыть, только при ?admin=1.
+  CardScene и PdfWindowLayer вынесены на фон.
+- Подтверждено вживую: меню открывается/закрывается по M на ?admin=1.
+
+## 🔜 NEXT — Slice 8 (EPIC E, аудио)
+Цель: 16 типов звуков на ПК, проигрывание по клику карточки, прерывание предыдущего,
+keep-alive для разблокировки автоплея, вкл/выкл в настройках.
