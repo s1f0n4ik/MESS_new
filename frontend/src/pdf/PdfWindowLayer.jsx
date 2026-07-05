@@ -1,52 +1,42 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { resolvePdfWindow } from './resolvePdfWindow'
 
-export function PdfWindowLayer({ state, myRole}) {
-  const winRef = useRef(null)
-  const lastTokenRef = useRef(null)
+export function PdfWindowLayer({ state, myRole }) {
+  const [override, setOverride] = useState(null) // локальный выбор вкладки
+  const win = state?.pdfWindowsByRole?.[myRole]
 
-  const payload = useMemo(() => {
-    return resolvePdfWindow(state, myRole)
-  }, [state, myRole])
+  // сброс локального выбора при смене token (новая волна/оседание)
+  useEffect(() => { setOverride(null) }, [win?.token])
 
-  useEffect(() => {
-    if (!payload.visible) {
-      if (winRef.current && !winRef.current.closed) {
-        try { winRef.current.close() } catch {}
-      }
-      winRef.current = null
-      lastTokenRef.current = null
-      return
-    }
+  if (!win || !win.visible) return null
+  const active = override || win.activeTab
+  const tabs = win.tabs || []
 
-    if (!payload.pdfFile) return
-
-    const token = payload.token || null
-    if (token && token === lastTokenRef.current) return
-
-    const url =
-      `/pdf-viewer.html?role=${encodeURIComponent(myRole)}` +
-      `&file=${encodeURIComponent(payload.pdfFile)}` +
-      `&token=${encodeURIComponent(token || '')}`
-
-    if (!winRef.current || winRef.current.closed) {
-      winRef.current = window.open(url, `pdf_${myRole}`, 'width=1200,height=900')
-    } else {
-      winRef.current.location.href = url
-      winRef.current.focus()
-    }
-
-    lastTokenRef.current = token
-  }, [myRole, payload.visible, payload.pdfFile, payload.token])
-
-  useEffect(() => {
-    return () => {
-      if (winRef.current && !winRef.current.closed) {
-        try { winRef.current.close() } catch {}
-      }
-      winRef.current = null
-    }
-  }, [])
-
-  return null
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 50, background: '#111' }}>
+      {tabs.length > 1 && (
+        <div style={{ display: 'flex', gap: 4, padding: 6, background: '#222' }}>
+          {tabs.map((t) => (
+            <button
+              key={t}
+              onClick={() => setOverride(t)}
+              style={{
+                fontWeight: t === active ? 700 : 400,
+                background: t === active ? '#2d6' : '#444',
+                color: t === active ? '#000' : '#eee',
+              }}
+            >
+              {t.replace('.pdf', '')}
+            </button>
+          ))}
+        </div>
+      )}
+      <iframe
+        key={active}
+        src={`/pdfs/${active}`}
+        title={active}
+        style={{ width: '100%', height: tabs.length > 1 ? 'calc(100% - 44px)' : '100%', border: 0 }}
+      />
+    </div>
+  )
 }

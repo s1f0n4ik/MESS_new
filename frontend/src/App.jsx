@@ -360,7 +360,7 @@ export default function App() {
 
               <div style={{ margin: '8px 0', fontSize: 13, fontFamily: 'monospace', lineHeight: 1.5 }}>
                 {'phase: '}{state?.scenario?.phase ?? '—'}
-                {' · pendulumStep: '}{String(state?.scenario?.pendulumStep ?? '—')}
+                {' · cycleStep: '}{String(state?.scenario?.cycleStep ?? '—')}
                 {' · wave: '}{state?.scenario?.waveIndex ?? 0}
                 {' · settled: '}{String(state?.scenario?.waveSettled ?? false)}
                 {' · active: '}{String(state?.scenario?.active ?? false)}

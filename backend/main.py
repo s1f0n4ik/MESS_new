@@ -13,12 +13,17 @@ ROLES = ["pc1", "pc2", "pc3", "pc4"]
 CLICK_THRESHOLD = 17
 
 PHASE_IDLE = "idle"
-PHASE_PENDULUM = "pendulum"
-PHASE_DWELL = "dwell"
+PHASE_CYCLE_OPEN = "cycle_open"      # sweep открытия слева-направо
+PHASE_CYCLE_HOLD = "cycle_hold"      # держим все открытыми n сек
+PHASE_CYCLE_CLOSE = "cycle_close"    # sweep закрытия справа-налево
+PHASE_CYCLE_SETTLE = "cycle_settle"  # осела накопительная раскладка с вкладками
 PHASE_FINAL_HOLD = "final_hold"
 PHASE_FORCE_OPEN_ALL = "force_open_all"
 
-PENDULUM_ROUTE = ["pc1", "pc2", "pc3", "pc4", "pc3", "pc2", "pc1"]
+# n секунд hold перед закрытием на каждой волне
+DEFAULT_HOLD_SECONDS = 1.0
+# 2 минуты между волнами (в тесте переопределяется коротким)
+DEFAULT_GAP_SECONDS = 120.0
 
 DEFAULT_DWELL_SECONDS = 5.0
 DEFAULT_RETURN_DELAY_SECONDS = 1.0
@@ -94,18 +99,19 @@ def initial_state():
             "restoreAfterForce": None,
             "waveIndex": 0,
             "waveSettled": False,
-            "pendulumStep": None,
+            "cycleStep": None,       # позиция внутри open/close sweep (0-based)
+            "cyclePhaseRoles": [],   # активные роли этого прогона (pc1..pcN канон)
             "dwellStartedAt": None,
             "dwellNextAt": None,
             "finalHoldRole": "pc4",
-            "returnDelaySeconds": DEFAULT_RETURN_DELAY_SECONDS,
-            "dwellSeconds": DEFAULT_DWELL_SECONDS,
+            "returnDelaySeconds": DEFAULT_RETURN_DELAY_SECONDS,  # = n (hold)
+            "dwellSeconds": DEFAULT_DWELL_SECONDS,               # legacy
+            "gapSeconds": DEFAULT_GAP_SECONDS,                   # 2 минуты
             "testMode": False,
-            "testRoles": [],  # online-роли на момент старта теста
-            "testPendulumRoute": [],  # динамический маршрут маятника
-            "testNextAt": None,  # когда авто-шаг
-            "testStepSeconds": DEFAULT_TEST_STEP_SECONDS,
-            "testDwellSeconds": DEFAULT_TEST_DWELL_SECONDS,
+            "testRoles": [],
+            "testStepSeconds": DEFAULT_TEST_STEP_SECONDS,   # шаг sweep
+            "testHoldSeconds": DEFAULT_HOLD_SECONDS,        # n в тесте
+            "testGapSeconds": DEFAULT_TEST_DWELL_SECONDS,   # «2 минуты» в тесте
 
         },
         "pdfWindow": {
@@ -113,6 +119,10 @@ def initial_state():
             "role": None,
             "pdfFile": None,
             "token": None,
+        },
+        "pdfWindowsByRole": {
+            r: {"visible": False, "tabs": [], "activeTab": None, "token": None}
+            for r in ROLES
         },
     }
 
@@ -146,38 +156,167 @@ def build_pendulum_route(active_roles):
         return list(active_roles)
     return list(active_roles) + list(reversed(active_roles[:-1]))
 
-def start_test_run(source: dict | None = None):
-    active = get_online_roles()
-    if not active:
-        # некому показывать — не запускаем
-        return False
+def cycle_route(active_roles):
+    """Канонический порядок активных ролей для sweep: pc1..pcN online."""
+    return list(active_roles)
 
-    route = build_pendulum_route(active)
 
+def start_cycles(active_roles, source=None, *, test=False):
+    """Старт первого круга: фаза open, шаг 0 -> открыт первый ПК."""
     s = STATE["scenario"]
     s["active"] = True
-    s["trigger"] = source or {"type": "test_run"}
-    s["phase"] = PHASE_PENDULUM
+    s["trigger"] = source or {"type": "cycles"}
     s["popupEpoch"] += 1
     s["popupPage"] = 0
     s["startedAt"] = now_ts()
     s["forceOpenAll"] = False
     s["restoreAfterForce"] = None
+    s["testMode"] = bool(test)
+    s["testRoles"] = list(active_roles)
+    s["cyclePhaseRoles"] = list(active_roles)
+    s["finalHoldRole"] = active_roles[-1] if active_roles else "pc4"
 
-    s["testMode"] = True
-    s["testRoles"] = active
-    s["testPendulumRoute"] = route
-    s["pendulumStep"] = 0
     s["waveIndex"] = 1
-    s["finalHoldRole"] = active[-1]   # последний online, не жёстко pc4
-
+    s["phase"] = PHASE_CYCLE_OPEN
+    s["cycleStep"] = 0
     clear_scenario_timers()
-    set_only_open_role(route[0])
-    arm_test_timer(s["testStepSeconds"])
 
+    opened = active_roles[:1]
+    set_windows_sweep(opened, 1)
+    _set_open_flags(opened)
+    arm_cycle_timer(step_seconds(s))
     recompute_wave_settled()
     sync_pdf_window()
     return True
+
+
+def _set_open_flags(open_roles):
+    s = STATE["scenario"]
+    open_set = set(open_roles)
+    s["openRoles"] = {r: (r in open_set) for r in ROLES}
+    s["currentRole"] = open_roles[-1] if open_roles else None
+
+
+def step_seconds(s):
+    return s["testStepSeconds"] if s.get("testMode") else float(s.get("returnDelaySeconds") or DEFAULT_TEST_STEP_SECONDS)
+
+
+def hold_seconds(s):
+    return s["testHoldSeconds"] if s.get("testMode") else float(s.get("returnDelaySeconds") or DEFAULT_HOLD_SECONDS)
+
+
+def gap_seconds(s):
+    return s["testGapSeconds"] if s.get("testMode") else float(s.get("gapSeconds") or DEFAULT_GAP_SECONDS)
+
+
+def arm_cycle_timer(delay):
+    s = STATE["scenario"]
+    now = now_ts()
+    s["dwellStartedAt"] = now
+    s["dwellNextAt"] = now + max(0.0, float(delay or 0))
+
+
+def cycle_tick_advance():
+    """Один авто-шаг фазовой машины круга. True если что-то изменилось."""
+    s = STATE["scenario"]
+    if not s["active"] or s["forceOpenAll"]:
+        return False
+
+    phase = s.get("phase")
+    active = s.get("cyclePhaseRoles") or []
+    total = len(active)
+    n = int(s.get("waveIndex") or 1)
+
+    # -------- OPEN sweep: pc1 -> ... -> pcTotal --------
+    if phase == PHASE_CYCLE_OPEN:
+        step = int(s.get("cycleStep") or 0)
+        if step < total - 1:
+            step += 1
+            s["cycleStep"] = step
+            s["popupEpoch"] += 1
+            opened = active[:step + 1]
+            set_windows_sweep(opened, n)
+            _set_open_flags(opened)
+            arm_cycle_timer(step_seconds(s))
+        else:
+            # все открыты -> HOLD n сек
+            s["phase"] = PHASE_CYCLE_HOLD
+            arm_cycle_timer(hold_seconds(s))
+        recompute_wave_settled()
+        sync_pdf_window()
+        return True
+
+    # -------- HOLD -> начать CLOSE --------
+    if phase == PHASE_CYCLE_HOLD:
+        s["phase"] = PHASE_CYCLE_CLOSE
+        s["cycleStep"] = total - 1  # индекс последнего открытого
+        s["popupEpoch"] += 1
+        # ещё все открыты, закрытие пойдёт со следующего тика
+        set_windows_sweep(active[:total], n)
+        _set_open_flags(active[:total])
+        arm_cycle_timer(step_seconds(s))
+        recompute_wave_settled()
+        sync_pdf_window()
+        return True
+
+    # -------- CLOSE sweep: pcTotal -> ... -> pc1 --------
+    if phase == PHASE_CYCLE_CLOSE:
+        step = int(s.get("cycleStep") if s.get("cycleStep") is not None else total - 1)
+        if step > 0:
+            step -= 1
+            s["cycleStep"] = step
+            s["popupEpoch"] += 1
+            opened = active[:step + 1]  # осталось открыто первых step+1
+            set_windows_sweep(opened, n)
+            _set_open_flags(opened)
+            arm_cycle_timer(step_seconds(s))
+        else:
+            # закрыт последний (pc1) -> SETTLE накопительной раскладки
+            s["phase"] = PHASE_CYCLE_SETTLE
+            s["cycleStep"] = None
+            s["popupEpoch"] += 1
+            settled = active[:n]
+            set_windows_settled(settled, n)
+            _set_open_flags(settled)
+            arm_cycle_timer(gap_seconds(s))
+        recompute_wave_settled()
+        sync_pdf_window()
+        return True
+
+    # -------- SETTLE -> следующий круг или final_hold --------
+    if phase == PHASE_CYCLE_SETTLE:
+        if n >= total:
+            s["phase"] = PHASE_FINAL_HOLD
+            set_windows_settled(active[:total], total)
+            _set_open_flags(active[:total])
+            clear_scenario_timers()
+            recompute_wave_settled()
+            sync_pdf_window()
+            return True
+        # следующий круг
+        s["waveIndex"] = n + 1
+        s["phase"] = PHASE_CYCLE_OPEN
+        s["cycleStep"] = 0
+        s["popupEpoch"] += 1
+        opened = active[:1]
+        set_windows_sweep(opened, n + 1)
+        _set_open_flags(opened)
+        arm_cycle_timer(step_seconds(s))
+        recompute_wave_settled()
+        sync_pdf_window()
+        return True
+
+    # -------- FINAL_HOLD: в тесте просто висим --------
+    if phase == PHASE_FINAL_HOLD:
+        return False
+
+    return False
+
+def start_test_run(source: dict | None = None):
+    active = get_online_roles()
+    if not active:
+        return False
+    return start_cycles(active, source or {"type": "test_run"}, test=True)
 
 
 def arm_test_timer(delay_seconds: float):
@@ -370,44 +509,17 @@ async def scenario_timer_loop():
     try:
         while True:
             await asyncio.sleep(SCENARIO_TICK_INTERVAL)
-
             s = STATE["scenario"]
             if not s["active"] or s["forceOpenAll"]:
                 continue
-
-            changed = False
             now = now_ts()
-
-            # ===== ТЕСТ-РЕЖИМ: автопилот, отдельный таймер testNextAt =====
-            if s.get("testMode"):
-                due_at = s.get("testNextAt")
-                if due_at is not None and now >= due_at:
-                    changed = test_tick_advance()
-                if changed:
-                    bump_version()
-                    await hub.broadcast("test_run_tick")
+            due_at = s.get("dwellNextAt")
+            if due_at is None or now < due_at:
                 continue
-            # ===== боевые ветки (без изменений) =====
-
-            if s.get("phase") == PHASE_PENDULUM and s.get("pendulumStep") == len(PENDULUM_ROUTE) - 1:
-                delay = float(s.get("returnDelaySeconds") or 0.0)
-                due_at = s.get("dwellNextAt")
-                if due_at is None:
-                    s["dwellStartedAt"] = now
-                    s["dwellNextAt"] = now + max(0.0, delay)
-                    changed = True
-                elif now >= due_at:
-                    settle_into_dwell_wave1()
-                    changed = True
-            elif s.get("phase") == PHASE_DWELL:
-                due_at = s.get("dwellNextAt")
-                if due_at is not None and now >= due_at:
-                    advance_dwell_timer({"type": "timer_dwell_advance"})
-                    changed = True
-
+            changed = cycle_tick_advance()
             if changed:
                 bump_version()
-                await hub.broadcast("scenario_timer")
+                await hub.broadcast("cycle_tick")
     except asyncio.CancelledError:
         pass
 
@@ -425,53 +537,11 @@ def get_last_open_role():
 
 def recompute_wave_settled():
     s = STATE["scenario"]
-
     if not s["active"] or s["forceOpenAll"]:
         s["waveSettled"] = False
         return
-
-    phase = s.get("phase")
-
-    # --- ТЕСТ-РЕЖИМ: settled по testRoles, а не по pc1..pcN ---
-    if s.get("testMode"):
-        if phase == PHASE_PENDULUM:
-            route = s.get("testPendulumRoute") or []
-            step = s.get("pendulumStep")
-            s["waveSettled"] = (step is not None and step == len(route) - 1)
-            return
-        if phase in (PHASE_DWELL, PHASE_FINAL_HOLD):
-            active = s.get("testRoles") or []
-            n = int(s.get("waveIndex") or 0)
-            if n < 1:
-                s["waveSettled"] = False
-                return
-            expected = set(active[:n])
-            opened = {r for r in ROLES if s["openRoles"].get(r)}
-            s["waveSettled"] = (opened == expected and len(expected) == n)
-            return
-        s["waveSettled"] = False
-        return
-
-    # --- дальше боевая логика без изменений ---
-    if phase == PHASE_PENDULUM:
-        step = s.get("pendulumStep")
-        s["waveSettled"] = (step == len(PENDULUM_ROUTE) - 1)
-        return
-
-    if phase in (PHASE_DWELL, PHASE_FINAL_HOLD):
-        n = int(s.get("waveIndex") or 0)
-        if n < 1:
-            s["waveSettled"] = False
-            return
-        expected = [f"pc{i + 1}" for i in range(n)]
-        opened = [r for r in ROLES if s["openRoles"].get(r)]
-        s["waveSettled"] = (
-                len(opened) == n
-                and all(s["openRoles"].get(r) is True for r in expected)
-        )
-        return
-
-    s["waveSettled"] = False
+    # settled == раскладка осела (settle/final_hold), sweep -> False
+    s["waveSettled"] = s.get("phase") in (PHASE_CYCLE_SETTLE, PHASE_FINAL_HOLD)
 
 
 def reset_open_roles():
@@ -516,27 +586,87 @@ def get_pendulum_role(step: int | None):
     return None
 
 
-def sync_pdf_window():
+def pdf_file_for_wave(n: int) -> str:
+    """pdf круга N: pdf1.pdf..pdf4.pdf (n — 1-based номер круга)."""
+    return f"pdf{n}.pdf"
+
+
+def set_windows_sweep(open_roles_ordered, wave_n):
+    """Во время open/close: у открытых ролей одна вкладка = pdf текущей волны."""
+    s = STATE["scenario"]
+    pdf = pdf_file_for_wave(wave_n)
+    open_set = set(open_roles_ordered)
+    wins = {}
+    for r in ROLES:
+        if r in open_set:
+            wins[r] = {
+                "visible": True,
+                "tabs": [pdf],
+                "activeTab": pdf,
+                "token": f'{s["popupEpoch"]}:{r}:sweep{wave_n}',
+            }
+        else:
+            wins[r] = {"visible": False, "tabs": [], "activeTab": None, "token": None}
+    STATE["pdfWindowsByRole"] = wins
+
+
+def set_windows_settled(settled_roles_ordered, wave_n):
+    """Settle круга N: на pcK активна pdfK, доступны pdf1..pdfN."""
+    s = STATE["scenario"]
+    tabs_all = [pdf_file_for_wave(i + 1) for i in range(wave_n)]
+    settled_set = set(settled_roles_ordered)
+    wins = {}
+    for idx, r in enumerate(ROLES):
+        if r in settled_set:
+            k = idx + 1  # pcK -> активная вкладка K
+            wins[r] = {
+                "visible": True,
+                "tabs": list(tabs_all),
+                "activeTab": pdf_file_for_wave(k),
+                "token": f'{s["popupEpoch"]}:{r}:settle{wave_n}',
+            }
+        else:
+            wins[r] = {"visible": False, "tabs": [], "activeTab": None, "token": None}
+    STATE["pdfWindowsByRole"] = wins
+
+
+def clear_windows():
+    STATE["pdfWindowsByRole"] = {
+        r: {"visible": False, "tabs": [], "activeTab": None, "token": None}
+        for r in ROLES
+    }
+
+
+def sync_legacy_pdf_window():
+    """Держим старый одиночный pdfWindow согласованным (по currentRole)."""
     s = STATE["scenario"]
     cur = s["currentRole"]
-
     if s.get("forceOpenAll"):
-        STATE["pdfWindow"]["visible"] = True
-        STATE["pdfWindow"]["role"] = "all"
-        STATE["pdfWindow"]["pdfFile"] = None
-        STATE["pdfWindow"]["token"] = f'{s["popupEpoch"]}:all'
+        STATE["pdfWindow"] = {
+            "visible": True, "role": "all", "pdfFile": None,
+            "token": f'{s["popupEpoch"]}:all',
+        }
         return
-
-    if cur in ROLES and s["openRoles"].get(cur):
-        STATE["pdfWindow"]["visible"] = True
-        STATE["pdfWindow"]["role"] = cur
-        STATE["pdfWindow"]["pdfFile"] = STATE["pdfsByRole"][cur]
-        STATE["pdfWindow"]["token"] = f'{s["popupEpoch"]}:{cur}'
+    win = STATE["pdfWindowsByRole"].get(cur) if cur in ROLES else None
+    if win and win.get("visible"):
+        STATE["pdfWindow"] = {
+            "visible": True, "role": cur, "pdfFile": win.get("activeTab"),
+            "token": win.get("token"),
+        }
     else:
-        STATE["pdfWindow"]["visible"] = False
-        STATE["pdfWindow"]["role"] = None
-        STATE["pdfWindow"]["pdfFile"] = None
-        STATE["pdfWindow"]["token"] = None
+        STATE["pdfWindow"] = {"visible": False, "role": None, "pdfFile": None, "token": None}
+
+
+def sync_pdf_window():
+    """Совместимость по имени: пересобирает legacy-окно из pdfWindowsByRole."""
+    if STATE["scenario"].get("forceOpenAll"):
+        STATE["pdfWindowsByRole"] = {
+            r: {"visible": True, "tabs": [pdf_file_for_wave(1)],
+                "activeTab": pdf_file_for_wave(1),
+                "token": f'{STATE["scenario"]["popupEpoch"]}:{r}:all'}
+            for r in ROLES
+        }
+    sync_legacy_pdf_window()
 
 
 def start_pendulum(trigger: dict | None = None):
@@ -601,7 +731,10 @@ def advance_pendulum(source: dict | None = None):
     sync_pdf_window()
 
 def start_scenario(trigger: dict, role: str = "pc1"):
-    start_pendulum(trigger)
+    if trigger.get("type") == "click_threshold" and trigger.get("role"):
+        STATE["clickScenarioLockedByRole"][sanitize_role(trigger["role"])] = True
+    active = [r for r in ROLES]  # боевой сценарий по всем 4 ПК
+    start_cycles(active, trigger, test=False)
 
 
 def open_role(role: str, source: dict | None = None):
