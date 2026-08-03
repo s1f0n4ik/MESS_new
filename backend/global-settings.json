@@ -1,4 +1,5 @@
 {
-  "returnDelaySeconds": 2.0,
-  "dwellSeconds": 2.0
+  "stepSeconds": 2.0,
+  "holdSeconds": 1.0,
+  "gapSeconds": 3.0
 }

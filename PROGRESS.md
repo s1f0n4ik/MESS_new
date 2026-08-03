@@ -178,7 +178,7 @@ Backend:
 - Добавлена тест-кнопка MIDI output (`note 72`, velocity `100`, duration `180ms`) в выбранный output.
 
 
-## Slice 7 — phase-machine сценария (черновая вертикаль, в работе)
+## Slice 7 — phase-machine сценария ((ОТМЕНЁН, заменён Slice 9))
 Backend (`backend/main.py`):
 - Добавлены фазы сценария: `idle`, `pendulum`, `dwell`, `final_hold`, `force_open_all`.
 - Добавлен `pendulumStep` и маршрут `pc1→pc2→pc3→pc4→pc3→pc2→pc1`.
@@ -275,3 +275,42 @@ Frontend:
 Подтверждено вживую:
 - Звук играет по нажатию на всех ПК, по возрастанию type N, предыдущий обрывается.
 - Тумблер выключает/включает звук; состояние переживает reload.
+
+## Slice 9 — Реконсиляция backend (cycle-машина, готово)
+- Вырезан весь мёртвый pendulum/dwell/test-pendulum код и ссылки на удалённые
+  константы/поля (PENDULUM_ROUTE, PHASE_PENDULUM/DWELL, pendulumStep, testDwellSeconds и др.).
+- Единственная модель сценария — cycle-машина: OPEN→HOLD→CLOSE→SETTLE ×N кругов → FINAL_HOLD.
+- `launch` переосмыслен: боевой эффект только в FINAL_HOLD и только от finalHoldRole
+  (последний online ПК) → close_scenario. В прочих фазах no-op (продвигает таймер).
+- Удалены debug-actions start_pendulum / debug_set_final_hold; добавлен cycle-корректный
+  debug_final_hold. Основной прогон — start_test_run (короткие тестовые тайминги).
+- open_role/close_role оставлены как ручной override (phase=manual_midi), почищены от
+  pendulumStep; теперь также пересобирают pdfWindowsByRole.
+- Тайминги вынесены в global-settings.json: stepSeconds/holdSeconds/gapSeconds
+  (боевые), test* — короткие для прогона. Контракт /api/settings/global изменён.
+
+## Slice 9 — подтверждение прогоном (готово)
+Сквозной TEST RUN подтверждён логом backend: 4 круга × (OPEN 4 шага → HOLD →
+CLOSE 4 шага → SETTLE) → FINAL_HOLD → авто-idle. Накопление в SETTLE растёт
+корректно: wave1 → [pc1], wave2 → [pc1,pc2], wave3 → [pc1,pc2,pc3], wave4 → все.
+PDF резолвится по номеру круга (GET /pdfs/pdf2.pdf на круге 2 и т.д.).
+Роли круга развязаны с online-ролями: круг всегда идёт по pc1..pc4, online влияет
+только на видимость окна. Весь прогон — один [action] start_test_run, дальше автоматика.
+
+## Slice 10 — реконсиляция фронта под pdfWindowsByRole (готово)
+- Удалён `frontend/src/pdf/resolvePdfWindow.js` — мёртвая модель (PENDULUM_ROUTE,
+  pendulumStep, waveSettled, pc{waveIndex}.pdf). Вся логика выбора файла и вкладок
+  теперь серверная, источник истины — state.pdfWindowsByRole[myRole].
+- Новый `frontend/src/net/urls.js`: httpBase / apiUrl / wsUrl / pdfUrl вынесены из App.jsx
+  (нужны и в PdfWindowLayer). App.jsx импортирует их, локальные копии удалены.
+- `PdfWindowLayer.jsx`: путь к PDF строится через pdfUrl(file, serverHost) — раньше был
+  жёсткий относительный /pdfs/..., из-за чего дисплеи, смотрящие на координатора по IP,
+  не грузили файл. Возвращены параметры просмотрщика #toolbar=0&navpanes=0&scrollbar=0
+  (без них у посетителя видна панель Chrome с кнопкой скачивания). Вёрстка переведена
+  на flex вместо calc(100% - 44px). override валидируется по tabs. Ярлыки вкладок
+  pdfN.pdf -> «Текст N».
+- `App.jsx`: PdfWindowLayer получает serverHost; исправлен блок «Windows by role»
+  (строки testMode/visibleOn печатались 4 раза внутри .map).
+- `localSettings.js`: audioEnabled добавлен в DEFAULTS и normalize() — раньше поле
+  вырезалось при сохранении, тумблер звука не переживал reload (в отличие от записанного
+  в Slice 8). Персист аудио теперь действительно работает.

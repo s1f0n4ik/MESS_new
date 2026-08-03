@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import './App.css'
 import { PdfWindowLayer } from './pdf/PdfWindowLayer'
 import { getRole, setRole, ROLES_LIST } from './role/role'
@@ -6,42 +6,11 @@ import { MidiPanel } from './midi/MidiPanel'
 import { loadLocalSettings, saveLocalSettings } from './settings/localSettings'
 import { CardScene } from './CardScene'
 import { audioEngine } from './audio/audioEngine'
+import { apiUrl, wsUrl } from './net/urls'
 
 const role = getRole()
 const isController = role === 'pc1'
 
-function normalizeServerHost(value) {
-  return String(value || '').trim()
-}
-
-function httpBase(serverHost) {
-  const host = normalizeServerHost(serverHost)
-  if (!host) return ''
-  const proto = window.location.protocol
-  if (/^https?:\/\//i.test(host)) return host
-  return `${proto}//${host}`
-}
-
-function wsUrl(serverHost) {
-  const host = normalizeServerHost(serverHost)
-  if (!host) {
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    return `${proto}://${window.location.host}/ws`
-  }
-  if (/^wss?:\/\//i.test(host)) return `${host.replace(/\/+$/, '')}/ws`
-  if (/^https?:\/\//i.test(host)) {
-    const base = new URL(host)
-    base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:'
-    return `${base.toString().replace(/\/+$/, '')}/ws`
-  }
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${proto}://${host}/ws`
-}
-
-function apiUrl(path, serverHost) {
-  const base = httpBase(serverHost)
-  return `${base}${path}`
-}
 
 function agoLabel(lastSeenAt) {
   if (!lastSeenAt) return ''
@@ -49,10 +18,18 @@ function agoLabel(lastSeenAt) {
   return `${sec}s`
 }
 
+// Сколько осталось до следующего авто-шага cycle-машины.
+function etaLabel(dwellNextAt) {
+  if (dwellNextAt == null) return '—'
+  const left = dwellNextAt - Date.now() / 1000
+  if (left <= 0) return 'now'
+  return `${left.toFixed(1)}s`
+}
+
 export default function App() {
   const [state, setState] = useState(null)
   const [connected, setConnected] = useState(false)
-  const [, forceTick] = useState(0) // чтобы «Ns назад» обновлялось
+  const [, forceTick] = useState(0) // чтобы «Ns назад» и ETA обновлялись
   const wsRef = useRef(null)
   const prevClicksRef = useRef(0)
 
@@ -63,8 +40,9 @@ export default function App() {
   })
 
   const [globalSettings, setGlobalSettings] = useState({
-    returnDelaySeconds: '',
-    dwellSeconds: '',
+    stepSeconds: '',
+    holdSeconds: '',
+    gapSeconds: '',
   })
   const [settingsSaving, setSettingsSaving] = useState(false)
 
@@ -75,18 +53,16 @@ export default function App() {
   useEffect(() => {
     if (!adminAllowed) return
     const onKey = (e) => {
-      if (e.key === 'm' || e.key === 'M' || e.key === 'ь' || e.key === 'Ь') {
-        setMenuOpen((v) => !v)
-      }
+      if (e.code === 'KeyM') setMenuOpen((v) => !v)
       if (e.key === 'Escape') setMenuOpen(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [adminAllowed])
 
-  // тик раз в секунду — освежаем relative-время в Devices
+  // тик 2 раза в секунду — освежаем relative-время в Devices и ETA таймера
   useEffect(() => {
-    const id = setInterval(() => forceTick((n) => n + 1), 1000)
+    const id = setInterval(() => forceTick((n) => n + 1), 500)
     return () => clearInterval(id)
   }, [])
 
@@ -100,7 +76,6 @@ export default function App() {
   }, [])
 
   // Звук клика: играем при приросте счётчика МОЕЙ роли.
-  // Счётчик растёт только на click_card, поэтому reason не нужен.
   useEffect(() => {
     const next = Number(state?.clicksByRole?.[role] || 0)
     const prev = prevClicksRef.current
@@ -115,8 +90,9 @@ export default function App() {
       const res = await fetch(apiUrl('/api/settings/global', localSettings.serverHost))
       const data = await res.json()
       setGlobalSettings({
-        returnDelaySeconds: String(data?.returnDelaySeconds ?? ''),
-        dwellSeconds: String(data?.dwellSeconds ?? ''),
+        stepSeconds: String(data?.stepSeconds ?? ''),
+        holdSeconds: String(data?.holdSeconds ?? ''),
+        gapSeconds: String(data?.gapSeconds ?? ''),
       })
     } catch {}
   }
@@ -185,8 +161,6 @@ export default function App() {
     }
   }, [localSettings.serverHost])
 
-  const flips = useMemo(() => state?.flippedCardsByRole?.[role] || {}, [state])
-
   const sendAction = (type, payload = {}) => {
     const ws = wsRef.current
     const body = { type, payload: { role, ...payload } }
@@ -208,8 +182,9 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          returnDelaySeconds: Number(globalSettings.returnDelaySeconds || 0),
-          dwellSeconds: Number(globalSettings.dwellSeconds || 0),
+          stepSeconds: Number(globalSettings.stepSeconds || 0),
+          holdSeconds: Number(globalSettings.holdSeconds || 0),
+          gapSeconds: Number(globalSettings.gapSeconds || 0),
         }),
       })
     } finally {
@@ -228,15 +203,11 @@ export default function App() {
     })
   }
 
-  const openPdfManual = () => {
-    sendAction('open_role_popup', { role })
-  }
-
-  const closePdfManual = () => {
-    sendAction('close_role_popup', { role })
-  }
+  const openPdfManual = () => sendAction('open_role_popup', { role })
+  const closePdfManual = () => sendAction('close_role_popup', { role })
 
   const devices = state?.connectedDevices || {}
+  const sc = state?.scenario || {}
 
   return (
     <div className="app">
@@ -248,10 +219,14 @@ export default function App() {
       </div>
 
       {/* PDF-слой — на всех ролях, это и есть «дисплей» */}
-      <PdfWindowLayer state={state} myRole={role} />
+      <PdfWindowLayer
+        state={state}
+        myRole={role}
+        serverHost={localSettings.serverHost}
+      />
 
       {/* ===== Служебное меню — оверлей поверх сцены =====
-          Только при ?admin=1 и по хоткею M / Ь (Esc — закрыть). */}
+          Только при ?admin=1 и по хоткею M (Esc — закрыть). */}
       {adminAllowed && menuOpen && (
         <div
           style={{
@@ -320,14 +295,32 @@ export default function App() {
               <div>stateVersion: {state?.stateVersion ?? '...'}</div>
               <div>Clicks ({role}): {state?.clicksByRole?.[role] ?? 0}</div>
               <div>
-                Scenario: {state?.scenario?.active ? 'active' : 'idle'} · currentRole:{' '}
-                {state?.scenario?.currentRole || '-'}
+                Scenario: {sc.active ? 'active' : 'idle'} · currentRole:{' '}
+                {sc.currentRole || '-'}
+              </div>
+
+              {/* ===== Главный прогон ===== */}
+              <div style={{ marginTop: 10, marginBottom: 6 }}>
+                <button
+                  onClick={() => sendAction('start_test_run')}
+                  style={{ fontWeight: 700, background: '#2d6', color: '#000', padding: '6px 12px' }}
+                >
+                  ▶ TEST RUN (auto, online only)
+                </button>
+                <button onClick={() => sendAction('stop_test_run')} style={{ marginLeft: 8 }}>
+                  ■ Stop test
+                </button>
+                <button onClick={() => sendAction('debug_final_hold')} style={{ marginLeft: 8 }}>
+                  → jump to final_hold
+                </button>
               </div>
 
               <div className="toolbar">
                 <button onClick={openPdfManual}>Open PDF (local)</button>
                 <button onClick={closePdfManual}>Close PDF (local)</button>
-                <button onClick={() => sendAction('launch')}>Launch (advance wave)</button>
+                <button onClick={() => sendAction('launch', { force: true })}>
+                  Launch (force close in final_hold)
+                </button>
                 <button onClick={() => sendAction('toggle_force_open_all')}>Force open all</button>
                 <button onClick={() => sendAction('reset_scenario')}>Reset scenario</button>
                 <button onClick={() => sendAction('hard_reset')}>Hard reset</button>
@@ -335,45 +328,62 @@ export default function App() {
 
               <div className="toolbar" style={{ marginTop: 8 }}>
                 {ROLES_LIST.map((r) => (
-                  <button key={r} onClick={() => sendAction('open_role_popup', { role: r })}>
+                  <button key={`o${r}`} onClick={() => sendAction('open_role_popup', { role: r })}>
                     open {r}
                   </button>
                 ))}
                 {ROLES_LIST.map((r) => (
-                  <button key={r} onClick={() => sendAction('close_role_popup', { role: r })}>
+                  <button key={`c${r}`} onClick={() => sendAction('close_role_popup', { role: r })}>
                     close {r}
                   </button>
                 ))}
               </div>
 
-              <div style={{ marginTop: 8 }}>
-                <button onClick={() => sendAction('start_pendulum')}>Start pendulum</button>
-                <button onClick={() => sendAction('debug_set_final_hold')}>Debug final_hold</button>
-                <button
-                  onClick={() => sendAction('start_test_run')}
-                  style={{ fontWeight: 700, background: '#2d6', color: '#000' }}
-                >
-                  ▶ TEST RUN (auto, online only)
-                </button>
-                <button onClick={() => sendAction('stop_test_run')}>■ Stop test</button>
+              {/* ===== Debug-строка под cycle-машину ===== */}
+              <div style={{ margin: '10px 0', fontSize: 13, fontFamily: 'monospace', lineHeight: 1.6 }}>
+                {'phase: '}<b>{sc.phase ?? '—'}</b>
+                {' · wave: '}{sc.waveIndex ?? 0}{' / '}{(sc.cyclePhaseRoles || []).length || '—'}
+                {' · cycleStep: '}{String(sc.cycleStep ?? '—')}
+                {' · settled: '}{String(sc.waveSettled ?? false)}
+                {' · active: '}{String(sc.active ?? false)}
+                <br />
+                {'current: '}{sc.currentRole ?? '—'}
+                {' · open: '}
+                {ROLES_LIST.filter((r) => sc.openRoles?.[r]).join(',') || '—'}
+                {' · epoch: '}{sc.popupEpoch ?? 0}
+                {' · finalHoldRole: '}{sc.finalHoldRole ?? '—'}
+                <br />
+                {'next step in: '}<b>{etaLabel(sc.dwellNextAt)}</b>
+                {' · cycleRoles: '}{(sc.cyclePhaseRoles || []).join(',') || '—'}
+                <br />
+                {'testMode: '}{String(sc.testMode ?? false)}
+                {' · testRoles: '}{(sc.testRoles || []).join(',') || '—'}
+                <br />
+                {'timings (live): step='}{sc.testMode ? sc.testStepSeconds : sc.stepSeconds}
+                {' hold='}{sc.testMode ? sc.testHoldSeconds : sc.holdSeconds}
+                {' gap='}{sc.testMode ? sc.testGapSeconds : sc.gapSeconds}
+                {sc.testMode ? ' [TEST]' : ' [LIVE]'}
               </div>
 
-              <div style={{ margin: '8px 0', fontSize: 13, fontFamily: 'monospace', lineHeight: 1.5 }}>
-                {'phase: '}{state?.scenario?.phase ?? '—'}
-                {' · cycleStep: '}{String(state?.scenario?.cycleStep ?? '—')}
-                {' · wave: '}{state?.scenario?.waveIndex ?? 0}
-                {' · settled: '}{String(state?.scenario?.waveSettled ?? false)}
-                {' · active: '}{String(state?.scenario?.active ?? false)}
-                {' · current: '}{state?.scenario?.currentRole ?? '—'}
-                {' · open: '}
-                {ROLES_LIST.filter((r) => state?.scenario?.openRoles?.[r]).join(',') || '—'}
-                {' · epoch: '}{state?.scenario?.popupEpoch ?? 0}
-                <br />
-                {'dwellNextAt: '}{state?.scenario?.dwellNextAt ?? '—'}
-                {' · returnDelaySeconds: '}{state?.scenario?.returnDelaySeconds ?? '—'}
-                {' · dwellSeconds: '}{state?.scenario?.dwellSeconds ?? '—'}
-                {' · testMode: '}{String(state?.scenario?.testMode ?? false)}
-                {' · testRoles: '}{(state?.scenario?.testRoles || []).join(',') || '—'}
+              {/* ===== Окна по ролям (tabs / activeTab) ===== */}
+              <div style={{ margin: '10px 0', fontSize: 12, fontFamily: 'monospace', lineHeight: 1.6 }}>
+                <div style={{ fontWeight: 700, fontFamily: 'sans-serif', marginBottom: 4 }}>
+                  Windows by role
+                </div>
+                <div style={{ marginBottom: 4, opacity: 0.8 }}>
+                  {'testMode: '}{String(sc.testMode ?? false)}
+                  {' · visibleOn: '}{(sc.testRoles || []).join(',') || '— (все)'}
+                </div>
+                {ROLES_LIST.map((r) => {
+                  const w = state?.pdfWindowsByRole?.[r] || {}
+                  return (
+                    <div key={r}>
+                      {r}: {w.visible ? '👁 visible' : '— hidden'}
+                      {' · active: '}{w.activeTab || '—'}
+                      {' · tabs: '}{(w.tabs || []).join(',') || '—'}
+                    </div>
+                  )
+                })}
               </div>
 
               {/* Local settings */}
@@ -392,10 +402,13 @@ export default function App() {
                       style={{ width: 220 }}
                     />
                   </label>
-                  <button onClick={saveLocalAndReconnect}>Save & reconnect</button>
+                  <button onClick={saveLocalAndReconnect}>Save &amp; reconnect</button>
                   <button
                     onClick={() => {
-                      const next = saveLocalSettings({ serverHost: '', audioEnabled: localSettings.audioEnabled })
+                      const next = saveLocalSettings({
+                        serverHost: '',
+                        audioEnabled: localSettings.audioEnabled,
+                      })
                       setLocalSettings((s) => ({ ...s, serverHost: next.serverHost || '' }))
                     }}
                   >
@@ -407,32 +420,47 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Global settings */}
+              {/* Global settings — боевые тайминги cycle-машины */}
               <div style={{ margin: '12px 0', padding: 12, border: '1px solid #444', borderRadius: 8 }}>
-                <div style={{ fontWeight: 700, marginBottom: 8 }}>Global settings</div>
+                <div style={{ fontWeight: 700, marginBottom: 8 }}>
+                  Global settings (боевые тайминги)
+                </div>
                 <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
                   <label style={{ fontSize: 13 }}>
-                    returnDelaySeconds{' '}
+                    stepSeconds{' '}
                     <input
                       type="number"
                       step="0.1"
                       min="0"
-                      value={globalSettings.returnDelaySeconds}
+                      value={globalSettings.stepSeconds}
                       onChange={(e) =>
-                        setGlobalSettings((s) => ({ ...s, returnDelaySeconds: e.target.value }))
+                        setGlobalSettings((s) => ({ ...s, stepSeconds: e.target.value }))
                       }
                       style={{ width: 90 }}
                     />
                   </label>
                   <label style={{ fontSize: 13 }}>
-                    dwellSeconds{' '}
+                    holdSeconds{' '}
                     <input
                       type="number"
                       step="0.1"
                       min="0"
-                      value={globalSettings.dwellSeconds}
+                      value={globalSettings.holdSeconds}
                       onChange={(e) =>
-                        setGlobalSettings((s) => ({ ...s, dwellSeconds: e.target.value }))
+                        setGlobalSettings((s) => ({ ...s, holdSeconds: e.target.value }))
+                      }
+                      style={{ width: 90 }}
+                    />
+                  </label>
+                  <label style={{ fontSize: 13 }}>
+                    gapSeconds{' '}
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      value={globalSettings.gapSeconds}
+                      onChange={(e) =>
+                        setGlobalSettings((s) => ({ ...s, gapSeconds: e.target.value }))
                       }
                       style={{ width: 90 }}
                     />
@@ -442,6 +470,11 @@ export default function App() {
                   </button>
                   <button onClick={loadGlobalSettings}>Reload settings</button>
                 </div>
+                <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
+                  step — пауза между открытием/закрытием соседних ПК · hold — удержание
+                  «всё открыто» перед закрытием · gap — пауза между кругами (боевое 120с).
+                  TEST RUN использует свои короткие тайминги и эти значения игнорирует.
+                </div>
               </div>
 
               <MidiPanel sendAction={sendAction} />
@@ -449,7 +482,7 @@ export default function App() {
           )}
 
           <div style={{ marginTop: 16, fontSize: 12, opacity: 0.6 }}>
-            Меню: M / Ь — открыть/закрыть · Esc — закрыть
+            Меню: M — открыть/закрыть · Esc — закрыть
           </div>
         </div>
       )}

@@ -3,6 +3,7 @@ const LOCAL_SETTINGS_KEY = 'postcards_local_settings_v1'
 const DEFAULTS = {
   role: 'pc1',
   serverHost: '',
+  audioEnabled: true,
   midiInputId: '',
   midiOutputId: '',
   midiFilterEnabled: true,
@@ -13,6 +14,7 @@ function normalize(raw = {}) {
   return {
     role: typeof raw.role === 'string' ? raw.role : DEFAULTS.role,
     serverHost: typeof raw.serverHost === 'string' ? raw.serverHost : DEFAULTS.serverHost,
+    audioEnabled: typeof raw.audioEnabled === 'boolean' ? raw.audioEnabled : DEFAULTS.audioEnabled,
     midiInputId: typeof raw.midiInputId === 'string' ? raw.midiInputId : DEFAULTS.midiInputId,
     midiOutputId: typeof raw.midiOutputId === 'string' ? raw.midiOutputId : DEFAULTS.midiOutputId,
     midiFilterEnabled:
