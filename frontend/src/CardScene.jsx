@@ -1,17 +1,27 @@
+
+
+
 import { useEffect, useState } from 'react'
 
 // ЭТАЛОННЫЙ ХОЛСТ. Вся сцена рисуется в этих координатах,
 // затем целиком масштабируется под реальный экран через transform: scale().
-// На инсталляционном мониторе 3440x1440 scale === 1.0 (пиксель-в-пиксель).
 const SCENE_WIDTH = 3440
 const SCENE_HEIGHT = 1440
 
-// Размер карточки в эталонных координатах.
-// TODO: подтверди реальные значения из старого кода, если отличались.
-const CARD_WIDTH = 640
-const CARD_HEIGHT = 518
+// Размеры из ТЗ: изображение 648×432, поля 284 по бокам, 213 сверху/снизу,
+// зазор между карточками 60, между рядами 156.
+const CARD_WIDTH = 648
+const CARD_HEIGHT = 432
 
-// Жёсткая сетка 2 ряда по 4 (как в старом коде).
+const COL_STEP = CARD_WIDTH + 60   // 708
+const ROW_STEP = CARD_HEIGHT + 156 // 588
+const MARGIN_X = 284
+const MARGIN_Y = 213
+
+//const CARD_POSITIONS = Array.from({ length: 8 }, (_, i) => ({
+//  left: MARGIN_X + (i % 4) * COL_STEP,
+//  top: MARGIN_Y + Math.floor(i / 4) * ROW_STEP,
+//}))
 const CARD_POSITIONS = [
   { left: 334,  top: 225 },
   { left: 1042, top: 225 },
@@ -22,8 +32,6 @@ const CARD_POSITIONS = [
   { left: 1750, top: 783 },
   { left: 2458, top: 783 },
 ]
-
-// Порядок раскладки: 1-2-3-4 / 5-6-7-8 (card N -> позиция N).
 const CARDS = Array.from({ length: 8 }, (_, i) => i + 1)
 
 function useSceneScale() {
@@ -43,8 +51,6 @@ function useSceneScale() {
   return scale
 }
 
-// Базовый антивандал. В браузере срабатывает частично,
-// на Tauri добьём нативно (EPIC C).
 function useAntiVandal() {
   useEffect(() => {
     const onContext = (e) => e.preventDefault()
@@ -72,39 +78,29 @@ function useAntiVandal() {
 
 export function CardScene({ onCardClick }) {
   const scale = useSceneScale()
-  useAntiVandal()
+  //useAntiVandal()
 
-  // Перевороты только в памяти — reload сбрасывает (по ТЗ этого этапа).
   const [flipped, setFlipped] = useState({})
 
   const handleClick = (cardNumber) => {
-    const idx = cardNumber - 1
     setFlipped((prev) => ({ ...prev, [cardNumber]: !prev[cardNumber] }))
-    if (onCardClick) onCardClick(idx) // тот же cardIndex 0..7, что и раньше
+    if (onCardClick) onCardClick(cardNumber - 1)
   }
+  useEffect(() => {
+  CARDS.forEach((n) => {
+    const img = new Image()
+    img.src = `/cards/images/back/${n}.png`
+  })
+}, [])
 
   return (
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: '#000',
-        overflow: 'hidden',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        userSelect: 'none',
-      }}
-    >
-      {/* Внутренний холст фиксированного размера, масштабируется целиком */}
+    <div className="pc-scene-root">
       <div
+        className="pc-scene-canvas"
         style={{
-          position: 'relative',
           width: SCENE_WIDTH,
           height: SCENE_HEIGHT,
           transform: `scale(${scale})`,
-          transformOrigin: 'center center',
-          flex: '0 0 auto',
         }}
       >
         {CARDS.map((n, i) => {
@@ -113,55 +109,21 @@ export function CardScene({ onCardClick }) {
           return (
             <div
               key={n}
+              className={`pc-card${isFlipped ? ' is-flipped' : ''}`}
               onClick={() => handleClick(n)}
               style={{
-                position: 'absolute',
                 left: pos.left,
                 top: pos.top,
                 width: CARD_WIDTH,
                 height: CARD_HEIGHT,
-                perspective: 1600,
-                cursor: 'pointer',
               }}
             >
-              <div
-                style={{
-                  position: 'relative',
-                  width: '100%',
-                  height: '100%',
-                  transition: 'transform 0.6s',
-                  transformStyle: 'preserve-3d',
-                  transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)',
-                }}
-              >
-                {/* FRONT */}
+              <div className="pc-card__inner">
                 <img
-                  src={`/cards/images/front/${n}.png`}
-                  alt={`card ${n} front`}
+                  className="pc-card__face"
+                  src={`/cards/images/${isFlipped ? 'back' : 'front'}/${n}.png`}
+                  alt={`card ${n}`}
                   draggable={false}
-                  style={{
-                    position: 'absolute',
-                    inset: 0,
-                    width: '100%',
-                    height: '100%',
-                    objectFit: 'contain',
-                    backfaceVisibility: 'hidden',
-                  }}
-                />
-                {/* BACK */}
-                <img
-                  src={`/cards/images/back/${n}.png`}
-                  alt={`card ${n} back`}
-                  draggable={false}
-                  style={{
-                    position: 'absolute',
-                    inset: 0,
-                    width: '100%',
-                    height: '100%',
-                    objectFit: 'contain',
-                    backfaceVisibility: 'hidden',
-                    transform: 'rotateY(180deg)',
-                  }}
                 />
               </div>
             </div>

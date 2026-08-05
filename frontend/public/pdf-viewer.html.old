@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title> </title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: #111; overflow: hidden; }
+    #wrap { display: flex; flex-direction: column; width: 100%; height: 100%; }
+    #tabs { flex: 0 0 auto; display: none; gap: 4px; padding: 6px; background: #222; }
+    #tabs button {
+      border: 0; padding: 8px 16px; font-size: 15px; cursor: pointer;
+      background: #444; color: #eee; user-select: none;
+    }
+    #tabs button.active { background: #2d6; color: #000; font-weight: 700; }
+    #pdf { flex: 1 1 auto; min-height: 0; width: 100%; border: 0; display: block; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="tabs"></div>
+    <iframe id="pdf"></iframe>
+  </div>
+
+  <script>
+    const qs = new URLSearchParams(location.search)
+    const host = (qs.get('host') || '').replace(/\/+$/, '') // абсолютный serverHost, обязателен в Tauri
+    const v = qs.get('v') || Date.now()
+    const tabs = (qs.get('tabs') || '').split(',').filter(Boolean)
+    const initial = qs.get('file') || tabs[0] || ''
+
+    const iframe = document.getElementById('pdf')
+    const tabsEl = document.getElementById('tabs')
+
+    const VIEW = 'toolbar=0&navpanes=0&scrollbar=0&view=FitH'
+
+    function label(file) {
+      const m = /^pdf(\d+)\.pdf$/i.exec(file || '')
+      return m ? `Текст ${m[1]}` : (file || '').replace(/\.pdf$/i, '')
+    }
+
+    function setPdf(file) {
+      if (!file) return
+      // cache-buster ?v перед якорем: заставляет перечитать обновлённый файл
+      iframe.src = `${host}/pdfs/${encodeURIComponent(file)}?v=${encodeURIComponent(v)}#${VIEW}`
+      ;[...tabsEl.children].forEach((b) => {
+        b.classList.toggle('active', b.dataset.file === file)
+      })
+    }
+
+    if (tabs.length > 1) {
+      tabsEl.style.display = 'flex'
+      for (const f of tabs) {
+        const b = document.createElement('button')
+        b.textContent = label(f)
+        b.dataset.file = f
+        b.onclick = () => setPdf(f)
+        tabsEl.appendChild(b)
+      }
+    }
+
+    setPdf(initial)
+  </script>
+</body>
+</html>

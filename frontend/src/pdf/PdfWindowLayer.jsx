@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { pdfUrl } from '../net/urls'
+import { PdfDocument } from './PdfDocument'
 
 // pdf2.pdf -> «Текст 2». Заказчик говорит «текстами», а не «пдфами».
 function tabLabel(file) {
@@ -70,11 +71,10 @@ export function PdfWindowLayer({ state, myRole, serverHost = '' }) {
 
       <div style={{ flex: '1 1 auto', minHeight: 0 }}>
         {active ? (
-          <iframe
-            key={`${token}:${active}`}
-            src={pdfUrl(active, serverHost)}
-            title={tabLabel(active)}
-            style={{ display: 'block', width: '100%', height: '100%', border: 0 }}
+          <PdfDocument
+            key={active}
+            url={pdfUrl(active, serverHost)}
+            resetKey={token}
           />
         ) : null}
       </div>

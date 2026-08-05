@@ -1,20 +1,25 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tauri-app",
+  "productName": "Postcards",
   "version": "0.1.0",
-  "identifier": "com.s1f0n4ik.tauri-app",
+  "identifier": "com.s1f0n4ik.postcards",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://localhost:5173",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
-        "title": "tauri-app",
-        "width": 800,
-        "height": 600
+        "label": "main",
+        "title": "Postcards",
+        "url": "/?role=pc1&admin=1",
+        "width": 1720,
+        "height": 720,
+        "resizable": true,
+        "decorations": true
       }
     ],
     "security": {

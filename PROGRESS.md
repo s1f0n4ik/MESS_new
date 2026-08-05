@@ -314,3 +314,14 @@ PDF резолвится по номеру круга (GET /pdfs/pdf2.pdf на �
 - `localSettings.js`: audioEnabled добавлен в DEFAULTS и normalize() — раньше поле
   вырезалось при сохранении, тумблер звука не переживал reload (в отличие от записанного
   в Slice 8). Персист аудио теперь действительно работает.
+
+## Slice 8b — Аудио под Tauri/WebKitGTK (готово)
+- `audioEngine.js` переписан: один переиспользуемый HTMLAudioElement вместо
+  `new Audio()` на клик. WebKit разблокирует автоплей поэлементно, а не для
+  документа, поэтому unlock делается синхронно в первом pointerdown через
+  silent data-URI WAV. Keep-alive loop больше не нужен (методы-заглушки).
+- Ассеты перекодированы 24-bit → 16-bit PCM 44100 stereo (ffmpeg, pcm_s16le).
+- Причина «тишины в Tauri при рабочем звуке в Chrome»: PulseAudio держал
+  нулевую громкость для отдельного sink-input WebKitWebProcess. Лечится
+  в pavucontrol; на боевых ПК проверять `pactl list sink-inputs | grep -i webkit`
+  перед прогоном, либо отключить module-stream-restore в /etc/pulse/default.pa.

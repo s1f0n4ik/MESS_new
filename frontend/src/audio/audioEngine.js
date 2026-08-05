@@ -1,118 +1,121 @@
-// Синглтон аудио-движка. Один переиспользуемый HTMLAudioElement,
-// резкий обрыв предыдущего звука (как в легаси), keep-alive для автоплея.
+const AUDIO_BASE = '/cards/audio'
 
-const AUDIO_BASE = '/cards/audio';
+// Пустой валидный WAV — для разблокировки элемента внутри жеста.
+const SILENT_WAV =
+  'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='
 
-// Шаблон имени зависит от роли: pc1 особый ("cliks1st"), остальные "cliks2/3/4".
 function soundFileName(role, clickNumber) {
-  const n = Math.max(1, Math.min(16, Number(clickNumber) || 1));
+  const n = Math.max(1, Math.min(16, Number(clickNumber) || 1))
   const byRole = {
     pc1: `cliks1st type ${n}.wav`,
     pc2: `cliks2 type ${n}.wav`,
     pc3: `cliks3 type ${n}.wav`,
     pc4: `cliks4 type ${n}.wav`,
-  };
-  return byRole[role] || byRole.pc1;
+  }
+  return byRole[role] || byRole.pc1
 }
 
 function soundFilePath(role, clickNumber) {
-  return `${AUDIO_BASE}/${role}/${encodeURIComponent(soundFileName(role, clickNumber))}`;
+  return `${AUDIO_BASE}/${role}/${encodeURIComponent(soundFileName(role, clickNumber))}`
 }
-
-const KEEP_ALIVE_SRC = soundFilePath('pc1', 1);
-const KEEP_ALIVE_VOLUME = 0.01;
-const KEEP_ALIVE_INTERVAL_MS = 2 * 60 * 1000;
 
 class AudioEngine {
   constructor() {
-    this.enabled = true;
-    this.current = null;         // текущий HTMLAudioElement
-    this.keepAlive = null;
-    this.keepAliveTimer = null;
-    this.unlocked = false;
-    this._boundUnlock = this._unlockHandler.bind(this);
+    this.enabled = true
+    this.el = null
+    this.unlocked = false
+    this._boundUnlock = () => this.unlock()
   }
 
-  setEnabled(value) {
-    this.enabled = Boolean(value);
-    if (!this.enabled) this.stop();
+  _ensureEl() {
+    if (!this.el) {
+      const el = new Audio()
+      el.preload = 'auto'
+      this.el = el
+    }
+    return this.el
+  }
+
+  setEnabled(v) {
+    this.enabled = Boolean(v)
+    if (!this.enabled) this.stop()
   }
 
   stop() {
-    if (this.current) {
-      try {
-        this.current.pause();
-        this.current.currentTime = 0;
-      } catch (_e) {}
-      this.current = null;
+    if (!this.el) return
+    try {
+      this.el.pause()
+      this.el.currentTime = 0
+    } catch (_e) {}
+  }
+
+  // ВАЖНО: вызывается синхронно из обработчика жеста.
+  unlock() {
+    if (this.unlocked) return
+    const el = this._ensureEl()
+    const vol = el.volume
+    el.volume = 0
+    el.src = SILENT_WAV
+    const p = el.play()
+    const done = () => {
+      try { el.pause(); el.currentTime = 0 } catch (_e) {}
+      el.volume = vol
+      this.unlocked = true
+      console.log('[audio] unlocked')
+    }
+    if (p && typeof p.then === 'function') {
+      p.then(done).catch((err) => {
+        el.volume = vol
+        console.warn('[audio] unlock failed:', err && err.name, err && err.message)
+      })
+    } else {
+      done()
     }
   }
 
-  // Резкий обрыв предыдущего + новый звук (семантика легаси).
+  // Резкий обрыв предыдущего + новый звук на ТОМ ЖЕ элементе.
   play(role, clickNumber) {
-    if (!this.enabled) return;
-    this.stop();
-    const audio = new Audio(soundFilePath(role, clickNumber));
-    this.current = audio;
-    audio.play().catch(() => {});
+    if (!this.enabled) return
+    const el = this._ensureEl()
+    const src = soundFilePath(role, clickNumber)
+    try {
+      el.pause()
+      el.currentTime = 0
+    } catch (_e) {}
+    el.src = src
+    el.play().catch((err) => {
+      console.warn('[audio] play failed:', err && err.name, err && err.message, src)
+    })
   }
 
-  // Разблокировка автоплея по первому пользовательскому жесту.
   bindUnlock() {
-    ['pointerdown', 'keydown', 'touchstart'].forEach((ev) =>
-      window.addEventListener(ev, this._boundUnlock, { once: false, passive: true })
-    );
+    const evs = ['pointerdown', 'mousedown', 'keydown', 'touchstart']
+    evs.forEach((ev) =>
+      window.addEventListener(ev, this._boundUnlock, { capture: true, passive: true })
+    )
   }
 
-  _unlockHandler() {
-    if (this.unlocked) return;
-    this.unlocked = true;
-    this._ensureKeepAlive();
-    const ka = this.keepAlive;
-    if (ka) {
-      ka.play().then(() => {
-        ka.pause();
-        ka.currentTime = 0;
-      }).catch(() => {});
+  _ensureEl() {
+    if (!this.el) {
+      const el = new Audio()
+      el.preload = 'auto'
+      el.addEventListener('error', () => {
+        const e = el.error
+        console.warn('[audio] element error:', e && e.code, e && e.message, el.currentSrc)
+      })
+      el.addEventListener('canplay', () => console.log('[audio] canplay', el.currentSrc))
+      el.addEventListener('playing', () => console.log('[audio] playing', el.currentSrc))
+      this.el = el
     }
-    ['pointerdown', 'keydown', 'touchstart'].forEach((ev) =>
-      window.removeEventListener(ev, this._boundUnlock)
-    );
+    return this.el
   }
 
-  _ensureKeepAlive() {
-    if (this.keepAlive) return this.keepAlive;
-    const audio = new Audio(KEEP_ALIVE_SRC);
-    audio.preload = 'auto';
-    audio.volume = KEEP_ALIVE_VOLUME;
-    this.keepAlive = audio;
-    try { audio.load(); } catch (_e) {}
-    return audio;
-  }
-
-  startKeepAliveLoop() {
-    this._ensureKeepAlive();
-    this.stopKeepAliveLoop();
-    this.keepAliveTimer = setInterval(() => {
-      if (!this.keepAlive || !this.unlocked) return;
-      try {
-        this.keepAlive.currentTime = 0;
-        this.keepAlive.play().then(() => {
-          setTimeout(() => {
-            try { this.keepAlive.pause(); this.keepAlive.currentTime = 0; } catch (_e) {}
-          }, 50);
-        }).catch(() => {});
-      } catch (_e) {}
-    }, KEEP_ALIVE_INTERVAL_MS);
-  }
-
-  stopKeepAliveLoop() {
-    if (this.keepAliveTimer) {
-      clearInterval(this.keepAliveTimer);
-      this.keepAliveTimer = null;
-    }
-  }
+  // Совместимость с текущими вызовами в App.jsx — заглушки.
+  startKeepAliveLoop() {}
+  stopKeepAliveLoop() {}
 }
 
-export const audioEngine = new AudioEngine();
+
+
+export const audioEngine = new AudioEngine()
 export { soundFilePath };

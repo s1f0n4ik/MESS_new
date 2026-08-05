@@ -13,7 +13,7 @@ yarn-error.log*
 pnpm-debug.log*
 
 # Tauri / Rust
-desktop/src-tauri/target/
+desktop_old/src-tauri/target/
 **/target/
 
 # Env / IDE / OS

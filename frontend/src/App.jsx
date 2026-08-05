@@ -7,6 +7,7 @@ import { loadLocalSettings, saveLocalSettings } from './settings/localSettings'
 import { CardScene } from './CardScene'
 import { audioEngine } from './audio/audioEngine'
 import { apiUrl, wsUrl } from './net/urls'
+import { getWindowDriver } from './pdf/windowDriver'
 
 const role = getRole()
 const isController = role === 'pc1'
@@ -26,7 +27,7 @@ function etaLabel(dwellNextAt) {
   return `${left.toFixed(1)}s`
 }
 
-export default function App() {
+function MainApp() {
   const [state, setState] = useState(null)
   const [connected, setConnected] = useState(false)
   const [, forceTick] = useState(0) // чтобы «Ns назад» и ETA обновлялись
@@ -49,6 +50,7 @@ export default function App() {
   // ==== Overlay-меню: только при ?admin=1, тоггл по M / Ь, закрытие по Esc ====
   const adminAllowed = new URLSearchParams(window.location.search).has('admin')
   const [menuOpen, setMenuOpen] = useState(false)
+
 
   useEffect(() => {
     if (!adminAllowed) return
@@ -209,6 +211,32 @@ export default function App() {
   const devices = state?.connectedDevices || {}
   const sc = state?.scenario || {}
 
+    // ===== Нативное PDF-окно (Tauri) / оверлей (браузер) =====
+  const driver = getWindowDriver()
+  const myWin = state?.pdfWindowsByRole?.[role]
+  const pdfVisible = Boolean(myWin?.visible)
+  const pdfToken = myWin?.token || null
+
+  useEffect(() => {
+    if (driver.kind !== 'tauri') return
+    if (pdfVisible) {
+      const q = new URLSearchParams({ view: 'pdf', role })
+      if (localSettings.serverHost) q.set('host', localSettings.serverHost)
+      driver.open(pdfToken, `/?${q.toString()}`, { role })
+    } else {
+      driver.close()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pdfVisible, pdfToken, localSettings.serverHost])
+
+  // Закрываем окно при выходе, чтобы не осталось сиротой.
+  useEffect(() => {
+    return () => {
+      if (driver.kind === 'tauri') driver.close()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   return (
     <div className="app">
       {/* ===== Сцена всегда на фоне (zIndex: 0) ===== */}
@@ -218,12 +246,13 @@ export default function App() {
         />
       </div>
 
-      {/* PDF-слой — на всех ролях, это и есть «дисплей» */}
-      <PdfWindowLayer
-        state={state}
-        myRole={role}
-        serverHost={localSettings.serverHost}
-      />
+      {driver.kind === 'web' && (
+        <PdfWindowLayer
+          state={state}
+          myRole={role}
+          serverHost={localSettings.serverHost}
+        />
+      )}
 
       {/* ===== Служебное меню — оверлей поверх сцены =====
           Только при ?admin=1 и по хоткею M (Esc — закрыть). */}
@@ -488,4 +517,64 @@ export default function App() {
       )}
     </div>
   )
+}
+// ===================== PDF-окно (?view=pdf) =====================
+// Отдельный роут: грузится в нативном окне Tauri либо в window.open.
+// Только читает состояние по WS, никаких identify/аудио/сцены.
+function PdfViewApp() {
+  const params = new URLSearchParams(window.location.search)
+  const myRole = params.get('role') || 'pc1'
+  const serverHost = params.get('host') || ''
+  const [state, setState] = useState(null)
+
+  useEffect(() => {
+    let stopped = false
+    let ws = null
+    let retry = null
+
+    const connect = () => {
+      if (stopped) return
+      ws = new WebSocket(wsUrl(serverHost))
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data)
+          // Формат тот же, что в MainApp: { type: 'state', payload }
+          if (msg?.type === 'state' && msg?.payload) setState(msg.payload)
+        } catch {}
+      }
+      ws.onclose = () => {
+        if (!stopped) retry = setTimeout(connect, 1500)
+      }
+      ws.onerror = () => {}
+    }
+
+    connect()
+    return () => {
+      stopped = true
+      if (retry) clearTimeout(retry)
+      if (ws) {
+        ws.onclose = null
+        try { ws.close() } catch {}
+      }
+    }
+  }, [serverHost])
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: '#111', overflow: 'hidden' }}>
+      <PdfWindowLayer state={state} myRole={myRole} serverHost={serverHost} />
+    </div>
+  )
+}
+
+export default function App() {
+  const params = new URLSearchParams(window.location.search)
+  const byQuery = params.get('view') === 'pdf'
+  // Подстраховка: если окно называется pdf-*, это PDF-вид независимо от query.
+  let byLabel = false
+  try {
+    byLabel = /^pdf-/.test(
+      window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label || ''
+    )
+  } catch {}
+  return byQuery || byLabel ? <PdfViewApp /> : <MainApp />
 }

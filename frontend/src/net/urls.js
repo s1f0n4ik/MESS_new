@@ -29,7 +29,8 @@ export function wsUrl(serverHost) {
 // Просмотрщик без своего интерфейса — для инсталляции обязательно.
 const PDF_VIEW_PARAMS = 'toolbar=0&navpanes=0&scrollbar=0&view=FitH'
 
-export function pdfUrl(file, serverHost) {
-  if (!file) return ''
-  return `${httpBase(serverHost)}/pdfs/${encodeURIComponent(file)}#${PDF_VIEW_PARAMS}`
+export function pdfUrl(file, serverHost, version) {
+  const base = httpBase(serverHost)
+  const v = version ? `?v=${encodeURIComponent(version)}` : ''
+  return `${base}/pdfs/${encodeURIComponent(file)}${v}`
 }
