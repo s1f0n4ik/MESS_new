@@ -1,428 +1,241 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { parseMidi, noteName } from './midiNote'
-import {
-  loadMapping,
-  saveMapping,
-  matchAction,
-  MIDI_ACTIONS,
-  LEGACY_CHANNEL,
-  LEGACY_OUTPUT_NOTE,
-  LEGACY_OUTPUT_VELOCITY,
-  LEGACY_OUTPUT_DURATION_MS,
-  resetMappingToLegacy,
-  actionToSendSpec,
-} from './midiMapping'
-import { loadLocalSettings, saveLocalSettings } from '../settings/localSettings'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { noteName } from './midiNote'
+import { MIDI_ACTIONS, LEGACY_CHANNEL, LEGACY_OUTPUT_NOTE } from './midiMapping'
+import { apiUrl } from '../net/urls'
 
-const DEDUPE_WINDOW_MS = 180
+const POLL_MS = 1000
 
-function preferPc10(list) {
-  if (!list.length) return ''
-  const exact = list.find((x) => x.name === 'PC-10' && x.state === 'connected')
-  if (exact) return exact.id
-  const fuzzy = list.find(
-    (x) => (x.name || '').toLowerCase().includes('pc-10') && x.state === 'connected'
-  )
-  if (fuzzy) return fuzzy.id
-  const firstConnected = list.find((x) => x.state === 'connected')
-  return firstConnected?.id || list[0]?.id || ''
-}
+export function MidiPanel({ serverHost }) {
+  const [status, setStatus] = useState(null)
+  const [draft, setDraft] = useState(null)   // локальные правки маппинга
+  const [busy, setBusy] = useState('')
+  const [simNote, setSimNote] = useState(60)
+  const draftRef = useRef(null)
+  draftRef.current = draft
 
-function sendMidiNote(output, channel, note, velocity, durationMs) {
-  if (!output) return false
-  const statusOn = 0x90 + (channel - 1)
-  const statusOff = 0x80 + (channel - 1)
-  try {
-    output.send([statusOn, note, velocity])
-    window.setTimeout(() => {
-      try {
-        output.send([statusOff, note, 0])
-      } catch {}
-    }, durationMs)
-    return true
-  } catch {
-    return false
-  }
-}
-
-export function MidiPanel({ sendAction }) {
-  const initial = loadLocalSettings()
-
-  const [access, setAccess] = useState('init')
-  const [inputs, setInputs] = useState([])
-  const [outputs, setOutputs] = useState([])
-  const [selectedInputId, setSelectedInputId] = useState(initial.midiInputId || '')
-  const [selectedOutputId, setSelectedOutputId] = useState(initial.midiOutputId || '')
-  const [log, setLog] = useState([])
-  const [mapping, setMapping] = useState(loadMapping())
-  const [filterEnabled, setFilterEnabled] = useState(
-    typeof initial.midiFilterEnabled === 'boolean' ? initial.midiFilterEnabled : true
-  )
-  const [filterChannel, setFilterChannel] = useState(
-    Number(initial.midiFilterChannel || LEGACY_CHANNEL)
-  )
-
-  const midiRef = useRef(null)
-  const learnRef = useRef(null)
-  const dedupeRef = useRef(new Map())
-
-  const pushLog = (entry) => {
-    setLog((prev) => [{ ...entry, at: Date.now() }, ...prev].slice(0, 80))
-  }
-
-  const selectedInput = useMemo(
-    () => inputs.find((i) => i.id === selectedInputId) || null,
-    [inputs, selectedInputId]
-  )
-
-  const selectedOutput = useMemo(
-    () => outputs.find((o) => o.id === selectedOutputId) || null,
-    [outputs, selectedOutputId]
-  )
-
-  const dispatchAction = (action, channel, note) => {
-    const spec = actionToSendSpec(action)
-    if (!spec) {
-      pushLog({ tag: `no-dispatch:${action}`, channel, note, note_name: noteName(note) })
-      return
-    }
-    sendAction(spec.type, spec.payload || {})
-    pushLog({ tag: `→ ${spec.type}`, channel, note, note_name: noteName(note) })
-  }
-
-  const onMidiRef = useRef(null)
-  onMidiRef.current = (msg, inputMeta) => {
-    const m = parseMidi(msg.data)
-    if (m.kind !== 'noteOn') return
-
-    const inputName = inputMeta?.name || ''
-    const dedupeKey = `${inputMeta?.id || 'unknown'}:${m.channel}:${m.note}`
-    const lastAt = dedupeRef.current.get(dedupeKey) || 0
-    const now = Date.now()
-    if (now - lastAt < DEDUPE_WINDOW_MS) {
-      pushLog({ ...m, inputName, note_name: noteName(m.note), tag: 'deduped' })
-      return
-    }
-    dedupeRef.current.set(dedupeKey, now)
-
-    if (learnRef.current != null) {
-      const idx = learnRef.current
-      setMapping((prev) => {
-        const next = [...prev]
-        if (next[idx]) next[idx] = { ...next[idx], channel: m.channel, note: m.note }
-        saveMapping(next)
-        return next
+  const call = useCallback(
+    async (path, body) => {
+      const res = await fetch(apiUrl(`/api/midi${path}`, serverHost), {
+        method: body ? 'POST' : 'GET',
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
       })
-      learnRef.current = null
-      pushLog({ ...m, inputName, note_name: noteName(m.note), tag: 'learned' })
-      return
-    }
+      return res.json()
+    },
+    [serverHost]
+  )
 
-    if (filterEnabled && m.channel !== filterChannel) {
-      pushLog({ ...m, inputName, note_name: noteName(m.note), tag: 'filtered' })
-      return
-    }
-
-    pushLog({ ...m, inputName, note_name: noteName(m.note), tag: 'in' })
-
-    const hit = matchAction(mapping, m.channel, m.note)
-    if (!hit) {
-      pushLog({ ...m, inputName, note_name: noteName(m.note), tag: 'unmapped' })
-      return
-    }
-
-    dispatchAction(hit.action, m.channel, m.note)
-  }
-
+  // Поллинг статуса. WS не используем: MIDI-лог не часть игрового состояния,
+  // незачем гнать его всем четырём ПК в каждом broadcast.
   useEffect(() => {
-    if (!navigator.requestMIDIAccess) {
-      setAccess('unsupported')
-      return
+    let stopped = false
+    const tick = async () => {
+      try {
+        const s = await call('/status')
+        if (stopped) return
+        setStatus(s)
+        // Не перетираем то, что оператор сейчас правит.
+        if (draftRef.current == null) setDraft(s.settings.mapping)
+      } catch {}
     }
-    if (!window.isSecureContext && location.hostname !== 'localhost') {
-      setAccess('insecure')
-      return
+    tick()
+    const id = setInterval(tick, POLL_MS)
+    return () => { stopped = true; clearInterval(id) }
+  }, [call])
+
+  const patch = async (body) => {
+    setBusy('settings')
+    try {
+      const r = await call('/settings', body)
+      setStatus((s) => (s ? { ...s, settings: r.settings } : s))
+      setDraft(r.settings.mapping)
+    } finally {
+      setBusy('')
     }
+  }
 
-    let cancelled = false
-
-    const attachSelectedInput = (ma, inputId) => {
-      ma.inputs.forEach((input) => {
-        input.onmidimessage = null
-      })
-      if (!inputId) return
-      const input = ma.inputs.get(inputId)
-      if (!input) return
-      input.onmidimessage = (msg) =>
-        onMidiRef.current?.(msg, { id: input.id, name: input.name })
-    }
-
-    const refresh = (ma) => {
-      const nextInputs = []
-      const nextOutputs = []
-      ma.inputs.forEach((i) => nextInputs.push({ id: i.id, name: i.name, state: i.state }))
-      ma.outputs.forEach((o) => nextOutputs.push({ id: o.id, name: o.name, state: o.state }))
-      setInputs(nextInputs)
-      setOutputs(nextOutputs)
-
-      let nextInputId = selectedInputId
-      if (!nextInputId || !nextInputs.some((x) => x.id === nextInputId)) {
-        nextInputId = preferPc10(nextInputs)
-        if (nextInputId !== selectedInputId) {
-          setSelectedInputId(nextInputId)
-          saveLocalSettings({ midiInputId: nextInputId })
-        }
-      }
-
-      let nextOutputId = selectedOutputId
-      if (!nextOutputId || !nextOutputs.some((x) => x.id === nextOutputId)) {
-        nextOutputId = preferPc10(nextOutputs)
-        if (nextOutputId !== selectedOutputId) {
-          setSelectedOutputId(nextOutputId)
-          saveLocalSettings({ midiOutputId: nextOutputId })
-        }
-      }
-
-      attachSelectedInput(ma, nextInputId)
-    }
-
-    navigator.requestMIDIAccess({ sysex: false }).then(
-      (ma) => {
-        if (cancelled) return
-        midiRef.current = ma
-        setAccess('ok')
-        refresh(ma)
-        ma.onstatechange = () => refresh(ma)
-      },
-      () => setAccess('denied')
+  if (!status) {
+    return (
+      <div style={{ border: '1px solid #444', padding: 12, marginTop: 12 }}>
+        <h3>MIDI</h3>
+        <div style={{ opacity: 0.7 }}>… запрос статуса с бэкенда</div>
+      </div>
     )
-
-    return () => {
-      cancelled = true
-      const ma = midiRef.current
-      if (ma) {
-        ma.inputs.forEach((input) => {
-          input.onmidimessage = null
-        })
-        ma.onstatechange = null
-      }
-    }
-  }, [selectedInputId, selectedOutputId, filterEnabled, filterChannel, mapping])
-
-  const updateRow = (idx, patch) => {
-    const next = mapping.map((row, i) => (i === idx ? { ...row, ...patch } : row))
-    setMapping(next)
-    saveMapping(next)
   }
 
-  const addRow = () => {
-    const next = [...mapping, { channel: LEGACY_CHANNEL, note: 60, action: 'launch' }]
-    setMapping(next)
-    saveMapping(next)
-  }
+  const st = status.settings
+  const inputs = status.ports?.inputs || []
+  const outputs = status.ports?.outputs || []
+  const mapping = draft || []
+  const dirty = JSON.stringify(mapping) !== JSON.stringify(st.mapping)
 
-  const removeRow = (idx) => {
-    const next = mapping.filter((_, i) => i !== idx)
-    setMapping(next)
-    saveMapping(next)
-  }
-
-  const resetLegacy = () => {
-    const next = resetMappingToLegacy()
-    setMapping(next)
-    pushLog({ tag: 'mapping_reset_legacy' })
-  }
-
-  const testOutput = () => {
-    const ma = midiRef.current
-    if (!ma || !selectedOutputId) {
-      pushLog({ tag: 'output_missing' })
-      return
-    }
-    const out = ma.outputs.get(selectedOutputId)
-    const ok = sendMidiNote(
-      out,
-      LEGACY_CHANNEL,
-      LEGACY_OUTPUT_NOTE,
-      LEGACY_OUTPUT_VELOCITY,
-      LEGACY_OUTPUT_DURATION_MS
-    )
-    pushLog({
-      tag: ok ? 'output_test_sent' : 'output_test_failed',
-      channel: LEGACY_CHANNEL,
-      note: LEGACY_OUTPUT_NOTE,
-      note_name: noteName(LEGACY_OUTPUT_NOTE),
-      velocity: LEGACY_OUTPUT_VELOCITY,
-    })
-  }
+  const updateRow = (idx, p) =>
+    setDraft(mapping.map((r, i) => (i === idx ? { ...r, ...p } : r)))
 
   return (
     <div style={{ border: '1px solid #444', padding: 12, marginTop: 12 }}>
-      <h3>MIDI</h3>
+      <h3>MIDI (backend)</h3>
 
-      <div>
-        Статус:{' '}
-        {access === 'ok' && '✅ доступен'}
-        {access === 'denied' && '⛔ отказано (разрешите доступ к MIDI)'}
-        {access === 'insecure' && '⚠️ небезопасный контекст — заходи через localhost'}
-        {access === 'unsupported' && '❌ Web MIDI не поддерживается (нужен Chrome)'}
-        {access === 'init' && '… запрос доступа'}
+      <div style={{ fontSize: 13, lineHeight: 1.7 }}>
+        <div>
+          Порт:{' '}
+          {status.inputOpen
+            ? <b style={{ color: '#6d6' }}>🟢 {status.inputPort}</b>
+            : <b style={{ color: '#d66' }}>🔴 закрыт</b>}
+        </div>
+        {status.lastError && (
+          <div style={{ color: '#e88' }}>error: {status.lastError}</div>
+        )}
+        <div style={{ opacity: 0.75 }}>
+          входы: {inputs.length ? inputs.join(' · ') : '— нет —'}
+        </div>
+        <div style={{ opacity: 0.75 }}>
+          выходы: {outputs.length ? outputs.join(' · ') : '— нет —'}
+        </div>
       </div>
 
-      <div style={{ marginTop: 8 }}>
-        <strong>Входы:</strong>{' '}
-        {inputs.length ? inputs.map((i) => `${i.name} (${i.state})`).join(', ') : '— нет —'}
-      </div>
-
-      <div style={{ marginTop: 6 }}>
+      <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <label>
-          input:{' '}
-          <select
-            value={selectedInputId}
-            onChange={(e) => {
-              const v = e.target.value
-              setSelectedInputId(v)
-              saveLocalSettings({ midiInputId: v })
-            }}
-          >
+          <input
+            type="checkbox"
+            checked={!!st.enabled}
+            onChange={(e) => patch({ enabled: e.target.checked })}
+          />{' '}
+          MIDI включён
+        </label>
+        <button onClick={() => call('/reopen').then(setStatus)}>переоткрыть порт</button>
+      </div>
+
+      <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <label style={{ fontSize: 13 }}>
+          input{' '}
+          <select value={st.inputName || ''} onChange={(e) => patch({ inputName: e.target.value })}>
             <option value="">— выбрать —</option>
-            {inputs.map((i) => (
-              <option key={i.id} value={i.id}>
-                {i.name} ({i.state})
-              </option>
-            ))}
+            {!inputs.includes(st.inputName) && st.inputName && (
+              <option value={st.inputName}>{st.inputName} (нет в системе)</option>
+            )}
+            {inputs.map((n) => <option key={n} value={n}>{n}</option>)}
           </select>
         </label>
-        <span style={{ marginLeft: 8, fontSize: 12, opacity: 0.8 }}>
-          active: {selectedInput?.name || '—'}
-        </span>
-      </div>
-
-      <div style={{ marginTop: 6 }}>
-        <label>
-          output:{' '}
-          <select
-            value={selectedOutputId}
-            onChange={(e) => {
-              const v = e.target.value
-              setSelectedOutputId(v)
-              saveLocalSettings({ midiOutputId: v })
-            }}
-          >
+        <label style={{ fontSize: 13 }}>
+          output{' '}
+          <select value={st.outputName || ''} onChange={(e) => patch({ outputName: e.target.value })}>
             <option value="">— выбрать —</option>
-            {outputs.map((o) => (
-              <option key={o.id} value={o.id}>
-                {o.name} ({o.state})
-              </option>
-            ))}
+            {!outputs.includes(st.outputName) && st.outputName && (
+              <option value={st.outputName}>{st.outputName} (нет в системе)</option>
+            )}
+            {outputs.map((n) => <option key={n} value={n}>{n}</option>)}
           </select>
         </label>
-        <button onClick={testOutput} style={{ marginLeft: 8 }}>
-          test output 72
+        <button onClick={() => call('/test-note', {})}>
+          test out {LEGACY_OUTPUT_NOTE}
         </button>
-        <span style={{ marginLeft: 8, fontSize: 12, opacity: 0.8 }}>
-          active: {selectedOutput?.name || '—'}
-        </span>
       </div>
 
       <div style={{ marginTop: 8 }}>
         <label>
           <input
             type="checkbox"
-            checked={filterEnabled}
-            onChange={(e) => {
-              setFilterEnabled(e.target.checked)
-              saveLocalSettings({ midiFilterEnabled: e.target.checked })
-            }}
+            checked={!!st.filterEnabled}
+            onChange={(e) => patch({ filterEnabled: e.target.checked })}
           />{' '}
           фильтровать по каналу
         </label>
         <input
-          type="number"
-          min={1}
-          max={16}
-          value={filterChannel}
-          onChange={(e) => {
-            const v = Number(e.target.value)
-            setFilterChannel(v)
-            saveLocalSettings({ midiFilterChannel: v })
-          }}
+          type="number" min={1} max={16}
+          value={st.filterChannel}
+          onChange={(e) => patch({ filterChannel: Number(e.target.value) })}
           style={{ width: 56, marginLeft: 8 }}
         />
-        <span style={{ marginLeft: 8, fontSize: 12, opacity: 0.8 }}>
+        <span style={{ marginLeft: 8, fontSize: 12, opacity: 0.7 }}>
           legacy: ch{LEGACY_CHANNEL}
         </span>
       </div>
 
+      {/* Имитация ноты: тот же путь, что реальный вход (дедуп + фильтр + маппинг) */}
+      <div style={{ marginTop: 12, padding: 8, border: '1px dashed #555', borderRadius: 6 }}>
+        <strong>Имитация входящей ноты</strong>
+        <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
+            type="number" value={simNote}
+            onChange={(e) => setSimNote(Number(e.target.value))}
+            style={{ width: 70 }}
+          />
+          <span style={{ width: 46 }}>{noteName(simNote)}</span>
+          <button onClick={() => call('/simulate', { note: simNote })}>отправить ▶</button>
+          {[60, 69].map((n) => (
+            <button key={n} onClick={() => call('/simulate', { note: n })}>
+              {n} {n === 60 ? '(launch)' : '(minimizeAll)'}
+            </button>
+          ))}
+        </div>
+        <div style={{ marginTop: 4, fontSize: 12, opacity: 0.65 }}>
+          Идёт через дедуп и фильтр канала, как настоящая нота. Нота 60 даёт эффект
+          только в фазе final_hold — в остальных фазах попадёт в лог как launch_ignored.
+        </div>
+      </div>
+
       <div style={{ marginTop: 12 }}>
         <strong>Маппинг (канал, нота → действие):</strong>
-        <button onClick={addRow} style={{ marginLeft: 8 }}>+ строка</button>
-        <button onClick={resetLegacy} style={{ marginLeft: 8 }}>reset legacy</button>
+        <button
+          onClick={() => setDraft([...mapping, { channel: LEGACY_CHANNEL, note: 60, action: 'launch' }])}
+          style={{ marginLeft: 8 }}
+        >
+          + строка
+        </button>
+        <button
+          onClick={() => patch({ mapping })}
+          disabled={!dirty || busy === 'settings'}
+          style={{ marginLeft: 8, fontWeight: dirty ? 700 : 400 }}
+        >
+          {dirty ? 'сохранить ●' : 'сохранено'}
+        </button>
+        <button onClick={() => setDraft(st.mapping)} style={{ marginLeft: 8 }}>
+          отменить правки
+        </button>
 
         {mapping.map((r, idx) => (
-          <div
-            key={idx}
-            style={{ display: 'flex', gap: 6, marginTop: 4, alignItems: 'center', flexWrap: 'wrap' }}
-          >
+          <div key={idx} style={{ display: 'flex', gap: 6, marginTop: 4, alignItems: 'center', flexWrap: 'wrap' }}>
             <input
-              type="text"
-              placeholder="любой"
+              type="text" placeholder="любой" style={{ width: 56 }}
               value={r.channel ?? ''}
-              style={{ width: 56 }}
               onChange={(e) => {
                 const v = e.target.value.trim()
                 updateRow(idx, { channel: v === '' ? null : Number(v) })
               }}
             />
             <input
-              type="number"
-              value={r.note}
-              style={{ width: 64 }}
+              type="number" style={{ width: 64 }} value={r.note}
               onChange={(e) => updateRow(idx, { note: Number(e.target.value) })}
             />
-            <span style={{ width: 52 }}>{noteName(r.note)}</span>
+            <span style={{ width: 46 }}>{noteName(r.note)}</span>
             <select value={r.action} onChange={(e) => updateRow(idx, { action: e.target.value })}>
-              {MIDI_ACTIONS.map((a) => (
-                <option key={a} value={a}>{a}</option>
-              ))}
+              {MIDI_ACTIONS.map((a) => <option key={a} value={a}>{a}</option>)}
             </select>
-            <button onClick={() => { learnRef.current = idx }}>обучить</button>
-            <button onClick={() => dispatchAction(r.action, r.channel ?? LEGACY_CHANNEL, r.note)}>
+            <button onClick={() => call('/simulate', { note: r.note, channel: r.channel ?? undefined })}>
               тест ▶
             </button>
-            <button onClick={() => removeRow(idx)}>✕</button>
+            <button onClick={() => setDraft(mapping.filter((_, i) => i !== idx))}>✕</button>
           </div>
         ))}
       </div>
 
       <div style={{ marginTop: 12 }}>
-        <strong>Симуляторы:</strong>{' '}
-        {MIDI_ACTIONS.map((a) => (
-          <button
-            key={a}
-            onClick={() => {
-              dispatchAction(a, LEGACY_CHANNEL, 0)
-              pushLog({ tag: `sim → ${a}` })
-            }}
-            style={{ marginLeft: 6, marginTop: 4 }}
-          >
-            {a}
-          </button>
-        ))}
-      </div>
-
-      <div style={{ marginTop: 12 }}>
-        <strong>Лог:</strong>
+        <strong>Лог бэкенда:</strong>
         <div style={{ maxHeight: 220, overflow: 'auto', fontFamily: 'monospace', fontSize: 12 }}>
-          {log.map((l, i) => (
+          {(status.log || []).map((l, i) => (
             <div key={i}>
-              {new Date(l.at).toLocaleTimeString()} · {l.tag}
-              {l.inputName ? ` · ${l.inputName}` : ''}
+              {new Date(l.at * 1000).toLocaleTimeString()} · {l.tag}
+              {l.port ? ` · ${l.port}` : ''}
               {l.channel != null ? ` · ch${l.channel}` : ''}
-              {l.note != null ? ` · ${l.note} ${l.note_name || ''}` : ''}
-              {l.velocity != null ? ` · v${l.velocity}` : ''}
+              {l.note != null ? ` · ${l.note} ${noteName(l.note)}` : ''}
+              {l.action ? ` · ${l.action}` : ''}
+              {l.type ? ` → ${l.type}` : ''}
+              {l.reason ? ` (${l.reason})` : ''}
+              {l.error ? ` · ${l.error}` : ''}
             </div>
           ))}
+          {!(status.log || []).length && <div style={{ opacity: 0.6 }}>— пусто —</div>}
         </div>
       </div>
     </div>

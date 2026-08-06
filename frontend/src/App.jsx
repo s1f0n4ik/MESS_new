@@ -506,7 +506,7 @@ function MainApp() {
                 </div>
               </div>
 
-              <MidiPanel sendAction={sendAction} />
+              <MidiPanel serverHost={localSettings.serverHost} />
             </>
           )}
 

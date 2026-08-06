@@ -10,6 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from midi_router import router as midi_router
+from midi_service import midi_service
 # ---------------------------------------------------------------------------
 # Константы
 # ---------------------------------------------------------------------------
@@ -738,8 +740,12 @@ async def lifespan(app: FastAPI):
     device_task = asyncio.create_task(device_sweeper())
     scenario_task = asyncio.create_task(scenario_timer_loop())
     try:
+        midi_service.final_hold_role = lambda: STATE["scenario"].get("finalHoldRole")
+        midi_service.in_final_hold = lambda: STATE["scenario"].get("phase") == PHASE_FINAL_HOLD
+        await midi_service.start(apply_action, hub.broadcast)
         yield
     finally:
+        await midi_service.stop()
         for task in (device_task, scenario_task):
             task.cancel()
         for task in (device_task, scenario_task):
@@ -756,7 +762,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+app.include_router(midi_router)
 PDF_DIR = BASE_DIR / "pdfs"
 PDF_DIR.mkdir(exist_ok=True)
 app.mount("/pdfs", StaticFiles(directory=str(PDF_DIR)), name="pdfs")
@@ -784,10 +790,13 @@ async def apply_action(t: str, p: dict):
         cur = STATE["flippedCardsByRole"][role].get(card_idx, False)
         STATE["flippedCardsByRole"][role][card_idx] = not cur
         STATE["clicksByRole"][role] += 1
+
+        s = STATE["scenario"]
+        busy = s["active"] and s.get("phase") != PHASE_MANUAL
         if (
-            not STATE["scenario"]["active"]
-            and not STATE["clickScenarioLockedByRole"][role]
-            and STATE["clicksByRole"][role] >= CLICK_THRESHOLD
+                not busy
+                and not STATE["clickScenarioLockedByRole"][role]
+                and STATE["clicksByRole"][role] >= CLICK_THRESHOLD
         ):
             start_scenario(
                 {"type": "click_threshold", "role": role,

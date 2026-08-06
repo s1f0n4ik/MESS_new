@@ -325,3 +325,170 @@ PDF резолвится по номеру круга (GET /pdfs/pdf2.pdf на �
   нулевую громкость для отдельного sink-input WebKitWebProcess. Лечится
   в pavucontrol; на боевых ПК проверять `pactl list sink-inputs | grep -i webkit`
   перед прогоном, либо отключить module-stream-restore в /etc/pulse/default.pa.
+
+
+## Slice 12 — Tauri: нативное PDF-окно (готово)
+Перенос: src-tauri переехал из /desktop в /frontend (один проект, один package.json).
+Tauri v2 (не v1, как было записано в бэклоге). devUrl → localhost:5173,
+withGlobalTauri: true, capabilities расширены core:window:* и core:webview:*.
+
+Rust (src-tauri/src/lib.rs):
+- open_pdf_window / close_pdf_window / minimize_all / main_fullscreen.
+- Окно 1968×1392 физических пикселей, без декораций, non-resizable,
+  по центру монитора со смещением +100 X / −50 Y. inner_size и position
+  в билдере задаются в логических единицах, поэтому делятся на scale_factor.
+- Реестр LiveWindows (HashSet под Mutex) + подписка на WindowEvent::Destroyed.
+  Причина: на X11 is_visible() отдаёт Ok(false) и для мёртвого хэндла,
+  различить «свёрнуто» и «уничтожено» по нему нельзя.
+- Геометрия применяется отложенно (250ms) и только через run_on_main_thread.
+
+Frontend:
+- windowDriver.js — единый интерфейс окна с двумя реализациями:
+  web (window.open, для dev в браузере) и tauri (invoke open/close_pdf_window).
+  Выбор по наличию window.__TAURI__.
+- Роут ?view=pdf — локальная страница-оболочка. Грузится из бандла, а не
+  с удалённого http: окно с внешним origin не получает доступ к Tauri IPC.
+- PDF рендерится своим экземпляром pdfjs-dist в canvas, fit-to-width,
+  сброс скролла при смене token (скролл наверх перед каждым кругом).
+
+Три диагноза, которые стоили больше всего времени (не повторять):
+1. [xcb] Unknown sequence number / Aborting — падение процесса при создании
+   второго webview. Причина: отсутствие XInitThreads() до gtk_init.
+   Лечится вызовом в самом начале run(). Переменные WEBKIT_DISABLE_DMABUF_RENDERER
+   и WEBKIT_DISABLE_COMPOSITING_MODE лишь снижали вероятность, но не устраняли.
+2. webkit-pdfjs-viewer://pdfjs + SecurityError на cross-origin frame — WebKitGTK
+   перехватывал PDF встроенным просмотрщиком, из-за чего фрагменты вида
+   #toolbar=0 игнорировались, а скролл и зум были недоступны. Решено
+   переходом на собственный pdfjs-dist в наш canvas.
+3. Vite «ws proxy error: write EPIPE» в логе — это HMR пишет в сокет закрытого
+   webview. Безвредно, в прод-сборке исчезает.
+
+Тех-долг слайса: позиция PDF-окна считается от текущего монитора main-окна,
+поэтому при перемещении main между экранами координаты меняются
+(наблюдалось 2316,0 → 76,119). На боевом стенде вынести целевой монитор
+и позицию в global-settings.json, расчёт по центру оставить как fallback.
+
+
+## Slice 12b — подтверждение порога кликов (готово)
+Сквозной боевой прогон от 17 кликов подтверждён логами backend + Tauri.
+
+Backend: 17 × click_card в phase=idle → start_scenario(click_threshold) →
+4 круга OPEN(4 шага) → HOLD → CLOSE(4 шага) → SETTLE → FINAL_HOLD.
+Накопление в SETTLE корректно: [pc1] → [pc1,pc2] → [pc1,pc2,pc3] → все.
+PDF по номеру круга (GET /pdfs/pdf3.pdf на круге 3, pdf4.pdf на круге 4).
+Весь прогон — ноль ручных экшенов после 17-го клика.
+
+Tauri: ни одного [xcb] Aborting за прогон. Реестр LiveWindows работает как
+задумано: window destroyed приходит на каждый close_pdf_window, повторный
+open по живому окну идёт в ветку "window alive -> unminimize + focus"
+вместо пересоздания. XInitThreads OK при старте.
+
+Найден дефект (не в этом слайсе, вынесен в BACKLOG как [!]):
+порог кликов не срабатывает повторно — scenario.active остаётся True после
+ручного open_role_popup, а clickScenarioLockedByRole снимается только
+в hard_reset. В логе видно, что перед успешной серией потребовался
+ручной hard_reset. На выставке без оператора это блокер.
+
+## Платформа стенда (зафиксировано 06.08)
+Выставка — Windows. Разработка — Ubuntu. Кросс-платформенность сохраняем.
+Единственная платформенная вставка в Rust — init_x11_threads
+под #[cfg(target_os = "linux")], на Windows компилируется в no-op.
+
+Что НЕ нужно на Windows: XInitThreads, PulseAudio sink-input WebKitWebProcess,
+module-stream-restore.
+Что нужно перепроверить на Windows: аудио-unlock. WebView2 вместо WebKitGTK,
+автоплей-политика другая, silent data-URI unlock может вести себя иначе.
+Что остаётся как есть: свой рендер PDF через pdfjs-dist. На WebView2 проблемы
+встроенного вьюера нет, но своя реализация работает на обеих платформах
+одинаково и даёт контроль над скроллом/зумом — не откатывать.
+
+MIDI: PC-10 — виртуальный порт rtpMIDI по сети. Демон rtpMIDI создаёт его
+в системе как обычный MIDI input, python-rtmidi открывает по имени
+(WinMM на Windows, ALSA на Linux). Сетевого кода не требуется.
+
+## Slice 13 — хвосты EPIC B (готово)
+Боевой финал подтверждён логом: phase=final_hold → [action] launch force=True
+→ close_scenario, PDF-окно закрылось. Ветка без force (от finalHoldRole)
+использует ту же функцию, подтвердится на MIDI.
+
+Дефект повторного порога закрыт. Три причины, все устранены:
+- close_scenario сохранял clicks и click-locks по умолчанию → инвертированы,
+  ручной reset_scenario передаёт preserve_* явно;
+- фаза manual_midi оставляла active=True и блокировала старт → введён busy,
+  который не считает manual_midi занятостью.
+Инсталляция теперь переиспользуема без оператора.
+
+## Slice 14 — MIDI на бэкенде (в работе)
+Причина переноса: Web MIDI отсутствует и в WebKitGTK, и в WebView2 —
+MidiPanel на navigator.requestMIDIAccess под Tauri неработоспособна
+на любой из целевых платформ.
+
+Новые модули (main.py не разрастается, только include_router):
+- midi_config.py — порт midiMapping.js: legacy-маппинг, match_action,
+  action_to_spec, persist midi-settings.json.
+- midi_service.py — открытие порта по имени (PC-10, с fallback на подстроку:
+  rtmidi добавляет индексы вида «PC-10 1»), дедуп 180ms, фильтр канала,
+  MIDI-out для ноты 72, кольцевой лог на 120 записей.
+- midi_router.py — /api/midi/status · /ports · /settings · /reopen
+  · /test-note · /simulate.
+
+Два решения, важные для боевого поведения:
+1. Колбэк rtmidi приходит из чужого потока, apply_action трогает общий STATE.
+   Колбэк только кладёт в asyncio-очередь через call_soon_threadsafe,
+   обработка — в таске цикла. Прямой вызов был бы гонкой за состояние.
+2. launch подставляет role=finalHoldRole. Раньше «нота на pc4» определялась
+   тем, что её слышал браузер на pc4. Теперь слушает координатор, поэтому
+   источник задаётся состоянием сценария; с пустым payload sanitize_role
+   дал бы pc1 и advance_wave промолчал бы в final_hold.
+
+/api/midi/simulate прогоняет ноту тем же путём, что реальный вход —
+маппинг и дедуп проверяются без железа.
+
+## Slice 14b — семантика локов и ревизия бэкенда (зафиксировано 06.08)
+Вариант Б принят: лок роли сохраняется после финала, клики не обнуляются.
+Обоснование заказчика: после финальной MIDI-ноты начинается другой блок
+представления; рядом с экспозицией постоянно находится медиатор, который
+сбрасывает сценарий кнопкой. Автоматический перезапуск не нужен и вреден.
+
+Откат части патча Slice 13: дефолты close_scenario возвращены на
+preserve_clicks=True / preserve_click_locks=True. reset_scenario больше не
+передаёт флаги явно (они дефолтные), hard_reset остаётся единственным
+способом обнулить клики и локи.
+
+Исправлено при ревизии:
+- debug_final_hold содержал вставленное условие порога кликов (17 кликов +
+  отсутствие лока), из-за чего кнопка не работала, а set_windows_settled
+  вызывался вне условия и оставлял противоречивое состояние.
+- Условие busy (manual_midi не считается занятостью) перенесено из
+  debug_final_hold в click_card, где оно и требовалось.
+
+Подключение MIDI к main.py проверено: include_router, старт/стоп в lifespan,
+final_hold_role пробрасывается лямбдой — midi_service не импортирует STATE,
+зависимость направлена внутрь.
+
+## Slice 14c — семантика ноты 60 и фронт MIDI (готово)
+Зафиксировано: нота 60 работает ИСКЛЮЧИТЕЛЬНО на закрытие в FINAL_HOLD.
+Старт сценария — только порог 17 кликов. advance_wave не расширялся.
+Обоснование: нота из Reaper приходит по расписанию; если бы она умела
+стартовать сценарий, при живом final_hold возник бы двойной запуск.
+
+Побочный эффект и его лечение: нота 60 вне final_hold не даёт эффекта,
+но раньше писалась в лог как успешный dispatch. Добавлен хук in_final_hold
+(дефолт True — модуль остаётся автономным без прокидывания из main.py),
+нота вне фазы логируется как launch_ignored с причиной.
+
+MidiPanel.jsx переписана целиком на /api/midi/*, Web MIDI удалён.
+Три решения:
+- поллинг статуса раз в секунду вместо WS: MIDI-лог не часть игрового
+  состояния, незачем гнать его всем четырём ПК в каждом broadcast;
+- черновик маппинга (draft) отделён от применённого — иначе поллинг
+  перетирал бы поля под руками оператора; кнопка сохранения показывает ●;
+- селекты портов показывают сохранённое имя даже когда порта нет в системе,
+  с пометкой «нет в системе». Иначе на Ubuntu без rtpMIDI выбранный PC-10
+  молча исчезал бы из списка и выглядел как сброшенная настройка.
+
+Стало мёртвым (в BACKLOG на зачистку): midiMapping.js — вся логика загрузки
+и маппинга (живёт в midi_config.py), остаются только MIDI_ACTIONS и LEGACY_*;
+midiNote.js — parseMidi/mapKey (сырые байты разбирает mido), noteName нужен;
+localSettings — midiInputId/midiOutputId/midiFilterEnabled/midiFilterChannel
+переехали в серверный midi-settings.json.

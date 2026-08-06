@@ -3,3 +3,5 @@ uvicorn[standard]==0.30.6
 zeroconf
 pydantic==2.9.2
 websockets
+mido==1.3.3
+python-rtmidi==1.5.8
