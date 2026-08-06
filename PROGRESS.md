@@ -492,3 +492,25 @@ MidiPanel.jsx переписана целиком на /api/midi/*, Web MIDI у�
 midiNote.js — parseMidi/mapKey (сырые байты разбирает mido), noteName нужен;
 localSettings — midiInputId/midiOutputId/midiFilterEnabled/midiFilterChannel
 переехали в серверный midi-settings.json.
+
+## Slice 14d — MIDI-путь подтверждён без железа (готово)
+Прогон через /api/midi/simulate закрыл обе ветки ноты 60.
+В final_hold: dispatch ch2/note60 → [action] launch payload={'role': 'pc4'}.
+Подтверждает, что цепочка midi_service → лямбда main.py → scenario.finalHoldRole
+замкнута, и «нота на pc4» задаётся состоянием, а не слушателем порта.
+В idle: launch_ignored reason='not in final_hold' вместо dispatch — диагностика
+на стенде не выдаёт отброшенную ноту за исполненную.
+
+[midi] no_input {'available': []} при старте на Ubuntu без rtpMIDI: сервис
+не падает, панель поднимается. Отсутствующий порт не блокирует координатор.
+
+Tauri за тот же прогон: XInitThreads OK, window built OK, geometry applied,
+window destroyed по закрытию, ни одного [xcb] Aborting.
+ws proxy error: write EPIPE — HMR в сокет закрытого webview, в прод-сборке нет.
+
+Побочный дефект, найденный по объёму лога: поллинг /api/midi/status шёл
+непрерывно и вытеснял [action]/[tick]. Исправлено с двух сторон —
+остановка интервала по document.hidden в MidiPanel и logging.Filter
+на uvicorn.access для этого пути. Фильтр по подстроке пути, а не по коду:
+ошибки MIDI видны в самой панели через lastError и в кольцевом логе сервиса,
+а потерянный [tick] восстановить нечем.

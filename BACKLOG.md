@@ -94,8 +94,11 @@
 - [ ] Зачистка мёртвого кода: midiMapping.js (оставить только MIDI_ACTIONS
       и LEGACY_*-константы), midiNote.js (parseMidi/mapKey), localSettings
       (midiInputId/midiOutputId/midiFilterEnabled/midiFilterChannel).
-- [ ] Полевая проверка на PC-10 + сквозной боевой прогон:
+- [~] Полевая проверка на PC-10 + сквозной боевой прогон:
       17 кликов → 4 круга → нота 60 на ch2 от pc4 → откат.
+- [x] Поллинг /api/midi/status остановлен при document.hidden, доступ-лог
+      uvicorn для этого маршрута отфильтрован. Причина: 60 запросов в минуту
+      с каждого клиента вытесняли [action] и [tick] из лога боевого прогона.
 
 ## EPIC G — Окно экфрасисов (popup 2052×966)
 - [ ] Разворот: 2 страницы (картинка + side-text + bottom-text), 8 разворотов, навигация.
