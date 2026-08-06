@@ -35,10 +35,14 @@ function createTauriDriver() {
 
   let label = null
 
-  const handle = () => {
+  const handle = async () => {
     if (!label) return null
-    // getByLabel асинхронный в 2.x, но нам нужен только объект для minimize.
-    return WebviewWindow.getByLabel(label)
+    try {
+      return await WebviewWindow.getByLabel(label)
+    } catch (e) {
+      console.error('[tauriDriver] getByLabel failed:', e)
+      return null
+    }
   }
 
   return {
