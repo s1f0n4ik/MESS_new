@@ -1,12 +1,29 @@
+// Внутри Tauri протокол страницы — tauri:, прокси нет, поэтому
+// относительные пути и window.location.protocol использовать нельзя.
+function isTauri() {
+  return typeof window !== 'undefined' && !!window.__TAURI__
+}
+
+function pageProtocol() {
+  const p = typeof window !== 'undefined' ? window.location.protocol : 'http:'
+  return p === 'http:' || p === 'https:' ? p : 'http:'
+}
+
+export const DEFAULT_SERVER_HOST = 'http://localhost:8787'
+
 export function normalizeServerHost(value) {
-  return String(value || '').trim()
+  const host = String(value || '').trim()
+  if (host) return host
+  // Браузер: пусто = относительные пути через vite-прокси (dev как раньше).
+  // Tauri: прокси нет — нужен абсолютный адрес координатора.
+  return isTauri() ? DEFAULT_SERVER_HOST : ''
 }
 
 export function httpBase(serverHost) {
   const host = normalizeServerHost(serverHost)
   if (!host) return ''
   if (/^https?:\/\//i.test(host)) return host.replace(/\/+$/, '')
-  return `${window.location.protocol}//${host}`
+  return `${pageProtocol()}//${host}`
 }
 
 export function apiUrl(path, serverHost) {
@@ -15,7 +32,7 @@ export function apiUrl(path, serverHost) {
 
 export function wsUrl(serverHost) {
   const host = normalizeServerHost(serverHost)
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  const proto = pageProtocol() === 'https:' ? 'wss' : 'ws'
   if (!host) return `${proto}://${window.location.host}/ws`
   if (/^wss?:\/\//i.test(host)) return `${host.replace(/\/+$/, '')}/ws`
   if (/^https?:\/\//i.test(host)) {
@@ -25,9 +42,6 @@ export function wsUrl(serverHost) {
   }
   return `${proto}://${host}/ws`
 }
-
-// Просмотрщик без своего интерфейса — для инсталляции обязательно.
-const PDF_VIEW_PARAMS = 'toolbar=0&navpanes=0&scrollbar=0&view=FitH'
 
 export function pdfUrl(file, serverHost, version) {
   const base = httpBase(serverHost)

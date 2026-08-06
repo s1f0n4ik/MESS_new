@@ -12,6 +12,8 @@ from pydantic import BaseModel
 
 from midi_router import router as midi_router
 from midi_service import midi_service
+
+from paths import PDFS_DIR
 # ---------------------------------------------------------------------------
 # Константы
 # ---------------------------------------------------------------------------
@@ -765,7 +767,7 @@ app.add_middleware(
 app.include_router(midi_router)
 PDF_DIR = BASE_DIR / "pdfs"
 PDF_DIR.mkdir(exist_ok=True)
-app.mount("/pdfs", StaticFiles(directory=str(PDF_DIR)), name="pdfs")
+app.mount("/pdfs", StaticFiles(directory=str(PDFS_DIR)), name="pdfs")
 
 
 # ---------------------------------------------------------------------------

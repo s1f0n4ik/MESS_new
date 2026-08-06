@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "opener:default",
+    "core:window:allow-create",
     "core:window:allow-close",
     "core:window:allow-destroy",
     "core:window:allow-show",
@@ -15,11 +16,18 @@
     "core:window:allow-set-focus",
     "core:window:allow-minimize",
     "core:window:allow-unminimize",
-    "core:window:allow-set-decorations",
-    "core:window:allow-set-always-on-top",
     "core:window:allow-set-fullscreen",
-    "core:window:allow-current-monitor",
-    "core:window:allow-primary-monitor",
-    "core:webview:allow-create-webview-window"
+    "core:window:allow-set-decorations",
+    "core:webview:allow-create-webview-window",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "binaries/postcards-backend",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    }
   ]
 }
