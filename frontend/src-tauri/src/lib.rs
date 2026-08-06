@@ -28,6 +28,7 @@ struct Launch {
     server: String,
     is_server: bool,
     fullscreen: bool,
+    admin: bool,
 }
 
 fn parse_args() -> Launch {
@@ -43,6 +44,7 @@ fn parse_args() -> Launch {
     Launch {
         is_server: args.iter().any(|a| a == "--serve"),
         fullscreen: !args.iter().any(|a| a == "--no-fullscreen"),
+        admin: args.iter().any(|a| a == "--admin"),
         role,
         server,
     }
@@ -263,6 +265,8 @@ pub fn run() {
                 urlencoding_lite(&launch.role),
                 urlencoding_lite(&launch.server)
             );
+            if launch.admin {
+                query.push_str("&admin=1");
             let win = WebviewWindowBuilder::new(
                 &handle,
                 "main",
