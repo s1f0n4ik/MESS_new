@@ -260,13 +260,17 @@ pub fn run() {
                 println!("[rs] client mode, backend not started");
             }
 
-            let query = format!(
+            // mut: ниже дописываем &admin=1
+            let mut query = format!(
                 "role={}&server={}",
                 urlencoding_lite(&launch.role),
                 urlencoding_lite(&launch.server)
             );
             if launch.admin {
                 query.push_str("&admin=1");
+            }
+            println!("[rs] main window query = {}", query);
+
             let win = WebviewWindowBuilder::new(
                 &handle,
                 "main",
