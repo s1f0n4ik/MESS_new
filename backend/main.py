@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from midi_router import router as midi_router
 from midi_service import midi_service
 
-from paths import PDFS_DIR
+from paths import PDFS_DIR, GLOBAL_SETTINGS_FILE
 # ---------------------------------------------------------------------------
 # Константы
 # ---------------------------------------------------------------------------
@@ -45,8 +45,8 @@ SCENARIO_TICK_INTERVAL = 0.5
 DEVICE_STALE_SECONDS = 30.0
 DEVICE_SWEEP_INTERVAL = 5.0
 
-BASE_DIR = Path(__file__).resolve().parent
-GLOBAL_SETTINGS_PATH = BASE_DIR / "global-settings.json"
+# BASE_DIR = Path(__file__).resolve().parent
+# GLOBAL_SETTINGS_PATH = BASE_DIR / "global-settings.json"
 
 
 def now_ts() -> float:
@@ -67,8 +67,8 @@ def default_global_settings():
 def load_global_settings():
     data = default_global_settings()
     try:
-        if GLOBAL_SETTINGS_PATH.exists():
-            raw = json.loads(GLOBAL_SETTINGS_PATH.read_text(encoding="utf-8"))
+        if GLOBAL_SETTINGS_FILE.exists():
+            raw = json.loads(GLOBAL_SETTINGS_FILE.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 for k in ("stepSeconds", "holdSeconds", "gapSeconds"):
                     if k in raw:
@@ -84,7 +84,7 @@ def save_global_settings(data: dict):
         "holdSeconds": float(data.get("holdSeconds", DEFAULT_HOLD_SECONDS) or 0),
         "gapSeconds": float(data.get("gapSeconds", DEFAULT_GAP_SECONDS) or 0),
     }
-    GLOBAL_SETTINGS_PATH.write_text(
+    GLOBAL_SETTINGS_FILE.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
@@ -765,8 +765,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(midi_router)
-PDF_DIR = BASE_DIR / "pdfs"
-PDF_DIR.mkdir(exist_ok=True)
+# PDF_DIR = BASE_DIR / "pdfs"
+# PDF_DIR.mkdir(exist_ok=True)
 app.mount("/pdfs", StaticFiles(directory=str(PDFS_DIR)), name="pdfs")
 
 
