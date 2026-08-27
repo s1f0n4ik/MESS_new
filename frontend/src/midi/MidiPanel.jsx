@@ -27,9 +27,14 @@ export function MidiPanel({ serverHost }) {
 
   // Поллинг статуса. WS не используем: MIDI-лог не часть игрового состояния,
   // незачем гнать его всем четырём ПК в каждом broadcast.
+  // Скрытая вкладка поллинг останавливает — иначе админка забивает
+  // лог координатора 60 запросами в минуту.
   useEffect(() => {
     let stopped = false
+    let id = null
+
     const tick = async () => {
+      if (document.hidden) return
       try {
         const s = await call('/status')
         if (stopped) return
@@ -38,9 +43,23 @@ export function MidiPanel({ serverHost }) {
         if (draftRef.current == null) setDraft(s.settings.mapping)
       } catch {}
     }
-    tick()
-    const id = setInterval(tick, POLL_MS)
-    return () => { stopped = true; clearInterval(id) }
+
+    const start = () => {
+      if (id) return
+      tick()
+      id = setInterval(tick, POLL_MS)
+    }
+    const stop = () => { clearInterval(id); id = null }
+
+    const onVis = () => (document.hidden ? stop() : start())
+    document.addEventListener('visibilitychange', onVis)
+    start()
+
+    return () => {
+      stopped = true
+      stop()
+      document.removeEventListener('visibilitychange', onVis)
+    }
   }, [call])
 
   const patch = async (body) => {
@@ -63,6 +82,9 @@ export function MidiPanel({ serverHost }) {
     )
   }
 
+  // Режим ноутбуков: MIDI сознательно выключен, это не ошибка.
+  const midiOff = status.midiAllowed === false
+
   const st = status.settings
   const inputs = status.ports?.inputs || []
   const outputs = status.ports?.outputs || []
@@ -73,17 +95,35 @@ export function MidiPanel({ serverHost }) {
     setDraft(mapping.map((r, i) => (i === idx ? { ...r, ...p } : r)))
 
   return (
-    <div style={{ border: '1px solid #444', padding: 12, marginTop: 12 }}>
+    <div style={{ border: '1px solid #444', padding: 12, marginTop: 12, opacity: midiOff ? 0.85 : 1 }}>
       <h3>MIDI (backend)</h3>
+
+      {midiOff && (
+        <div
+          style={{
+            background: '#332',
+            border: '1px solid #885',
+            color: '#dc6',
+            padding: '6px 10px',
+            marginBottom: 8,
+            fontSize: 13,
+          }}
+        >
+          MIDI выключен: режим «Ноутбуки». Порт не открывается, входящие ноты
+          игнорируются. Переключить режим — панель «Режим инсталляции».
+        </div>
+      )}
 
       <div style={{ fontSize: 13, lineHeight: 1.7 }}>
         <div>
           Порт:{' '}
-          {status.inputOpen
-            ? <b style={{ color: '#6d6' }}>🟢 {status.inputPort}</b>
-            : <b style={{ color: '#d66' }}>🔴 закрыт</b>}
+          {midiOff
+            ? <b style={{ color: '#dc6' }}>⏸ выключен режимом</b>
+            : status.inputOpen
+              ? <b style={{ color: '#6d6' }}>🟢 {status.inputPort}</b>
+              : <b style={{ color: '#d66' }}>🔴 закрыт</b>}
         </div>
-        {status.lastError && (
+        {status.lastError && !midiOff && (
           <div style={{ color: '#e88' }}>error: {status.lastError}</div>
         )}
         <div style={{ opacity: 0.75 }}>
@@ -99,17 +139,24 @@ export function MidiPanel({ serverHost }) {
           <input
             type="checkbox"
             checked={!!st.enabled}
+            disabled={midiOff}
             onChange={(e) => patch({ enabled: e.target.checked })}
           />{' '}
           MIDI включён
         </label>
-        <button onClick={() => call('/reopen').then(setStatus)}>переоткрыть порт</button>
+        <button disabled={midiOff} onClick={() => call('/reopen').then(setStatus)}>
+          переоткрыть порт
+        </button>
       </div>
 
       <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <label style={{ fontSize: 13 }}>
           input{' '}
-          <select value={st.inputName || ''} onChange={(e) => patch({ inputName: e.target.value })}>
+          <select
+            value={st.inputName || ''}
+            disabled={midiOff}
+            onChange={(e) => patch({ inputName: e.target.value })}
+          >
             <option value="">— выбрать —</option>
             {!inputs.includes(st.inputName) && st.inputName && (
               <option value={st.inputName}>{st.inputName} (нет в системе)</option>
@@ -119,7 +166,11 @@ export function MidiPanel({ serverHost }) {
         </label>
         <label style={{ fontSize: 13 }}>
           output{' '}
-          <select value={st.outputName || ''} onChange={(e) => patch({ outputName: e.target.value })}>
+          <select
+            value={st.outputName || ''}
+            disabled={midiOff}
+            onChange={(e) => patch({ outputName: e.target.value })}
+          >
             <option value="">— выбрать —</option>
             {!outputs.includes(st.outputName) && st.outputName && (
               <option value={st.outputName}>{st.outputName} (нет в системе)</option>
@@ -127,7 +178,7 @@ export function MidiPanel({ serverHost }) {
             {outputs.map((n) => <option key={n} value={n}>{n}</option>)}
           </select>
         </label>
-        <button onClick={() => call('/test-note', {})}>
+        <button disabled={midiOff} onClick={() => call('/test-note', {})}>
           test out {LEGACY_OUTPUT_NOTE}
         </button>
       </div>
@@ -137,6 +188,7 @@ export function MidiPanel({ serverHost }) {
           <input
             type="checkbox"
             checked={!!st.filterEnabled}
+            disabled={midiOff}
             onChange={(e) => patch({ filterEnabled: e.target.checked })}
           />{' '}
           фильтровать по каналу
@@ -144,6 +196,7 @@ export function MidiPanel({ serverHost }) {
         <input
           type="number" min={1} max={16}
           value={st.filterChannel}
+          disabled={midiOff}
           onChange={(e) => patch({ filterChannel: Number(e.target.value) })}
           style={{ width: 56, marginLeft: 8 }}
         />
@@ -152,7 +205,9 @@ export function MidiPanel({ serverHost }) {
         </span>
       </div>
 
-      {/* Имитация ноты: тот же путь, что реальный вход (дедуп + фильтр + маппинг) */}
+      {/* Имитация ноты: тот же путь, что реальный вход (дедуп + фильтр + маппинг).
+          В laptop-режиме нота дойдёт до _handle и отсеется как ignored_laptop_mode —
+          кнопки не блокируем, это удобный способ убедиться, что гейт работает. */}
       <div style={{ marginTop: 12, padding: 8, border: '1px dashed #555', borderRadius: 6 }}>
         <strong>Имитация входящей ноты</strong>
         <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -172,6 +227,7 @@ export function MidiPanel({ serverHost }) {
         <div style={{ marginTop: 4, fontSize: 12, opacity: 0.65 }}>
           Идёт через дедуп и фильтр канала, как настоящая нота. Нота 60 даёт эффект
           только в фазе final_hold — в остальных фазах попадёт в лог как launch_ignored.
+          {midiOff && ' В режиме «Ноутбуки» любая нота отсеется как ignored_laptop_mode.'}
         </div>
       </div>
 

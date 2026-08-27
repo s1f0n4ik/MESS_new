@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+import sys
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from pathlib import Path
@@ -12,6 +13,7 @@ from pydantic import BaseModel
 
 from midi_router import router as midi_router
 from midi_service import midi_service
+from pdfs_router import router as pdfs_router
 
 from paths import PDFS_DIR, GLOBAL_SETTINGS_FILE
 # ---------------------------------------------------------------------------
@@ -19,7 +21,19 @@ from paths import PDFS_DIR, GLOBAL_SETTINGS_FILE
 # ---------------------------------------------------------------------------
 ROLES = ["pc1", "pc2", "pc3", "pc4"]
 CLICK_THRESHOLD = 17
-
+def seed_pdfs_if_empty():
+    """Первый запуск после установки: data/pdfs пуста — копируем дефолтные
+    PDF из ресурсов установщика (лежат рядом с exe в pdfs-default)."""
+    if any(PDFS_DIR.glob("*.pdf")):
+        return
+    if not getattr(sys, "frozen", False):
+        return
+    seed = Path(sys.executable).parent / "pdfs-default"
+    if not seed.is_dir():
+        return
+    for f in seed.glob("*.pdf"):
+        (PDFS_DIR / f.name).write_bytes(f.read_bytes())
+        print(f"[seed] {f.name} -> {PDFS_DIR}", flush=True)
 PHASE_IDLE = "idle"
 PHASE_CYCLE_OPEN = "cycle_open"      # sweep открытия слева-направо
 PHASE_CYCLE_HOLD = "cycle_hold"      # держим все открытыми n сек
@@ -56,13 +70,16 @@ def now_ts() -> float:
 # ---------------------------------------------------------------------------
 # Глобальные настройки (persist)
 # ---------------------------------------------------------------------------
+INSTALLATION_MODES = ("exhibition", "laptop")
+
 def default_global_settings():
     return {
         "stepSeconds": DEFAULT_STEP_SECONDS,
         "holdSeconds": DEFAULT_HOLD_SECONDS,
         "gapSeconds": DEFAULT_GAP_SECONDS,
+        "installationMode": "exhibition",
+        "pendulumStepMs": 2000,
     }
-
 
 def load_global_settings():
     data = default_global_settings()
@@ -73,16 +90,21 @@ def load_global_settings():
                 for k in ("stepSeconds", "holdSeconds", "gapSeconds"):
                     if k in raw:
                         data[k] = float(raw[k])
+                if raw.get("installationMode") in INSTALLATION_MODES:
+                    data["installationMode"] = raw["installationMode"]
+                if "pendulumStepMs" in raw:
+                    data["pendulumStepMs"] = max(100, int(raw["pendulumStepMs"]))
     except Exception:
         pass
     return data
-
 
 def save_global_settings(data: dict):
     payload = {
         "stepSeconds": float(data.get("stepSeconds", DEFAULT_STEP_SECONDS) or 0),
         "holdSeconds": float(data.get("holdSeconds", DEFAULT_HOLD_SECONDS) or 0),
         "gapSeconds": float(data.get("gapSeconds", DEFAULT_GAP_SECONDS) or 0),
+        "installationMode": data.get("installationMode", "exhibition"),
+        "pendulumStepMs": int(data.get("pendulumStepMs", 2000)),
     }
     GLOBAL_SETTINGS_FILE.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -203,7 +225,11 @@ def clear_scenario_timers():
 # Тайминги (боевые vs тест)
 # ---------------------------------------------------------------------------
 def step_seconds(s):
-    return float(s["testStepSeconds"] if s.get("testMode") else s.get("stepSeconds") or DEFAULT_STEP_SECONDS)
+    if s.get("testMode"):
+        return float(s["testStepSeconds"])
+    if GLOBAL_SETTINGS.get("installationMode") == "laptop":
+        return float(GLOBAL_SETTINGS.get("pendulumStepMs", 2000)) / 1000.0
+    return float(s.get("stepSeconds") or DEFAULT_STEP_SECONDS)
 
 
 def hold_seconds(s):
@@ -739,11 +765,13 @@ async def scenario_timer_loop():
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    seed_pdfs_if_empty()
     device_task = asyncio.create_task(device_sweeper())
     scenario_task = asyncio.create_task(scenario_timer_loop())
     try:
         midi_service.final_hold_role = lambda: STATE["scenario"].get("finalHoldRole")
         midi_service.in_final_hold = lambda: STATE["scenario"].get("phase") == PHASE_FINAL_HOLD
+        midi_service.midi_allowed = lambda: GLOBAL_SETTINGS.get("installationMode") != "laptop"
         await midi_service.start(apply_action, hub.broadcast)
         yield
     finally:
@@ -765,6 +793,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(midi_router)
+app.include_router(pdfs_router)
 # PDF_DIR = BASE_DIR / "pdfs"
 # PDF_DIR.mkdir(exist_ok=True)
 app.mount("/pdfs", StaticFiles(directory=str(PDFS_DIR)), name="pdfs")
@@ -895,6 +924,8 @@ class GlobalSettingsBody(BaseModel):
     stepSeconds: float
     holdSeconds: float
     gapSeconds: float
+    installationMode: str | None = None
+    pendulumStepMs: int | None = None
 
 
 @app.post("/api/action")
@@ -912,8 +943,16 @@ async def set_global_settings(body: GlobalSettingsBody):
     GLOBAL_SETTINGS["stepSeconds"] = float(body.stepSeconds)
     GLOBAL_SETTINGS["holdSeconds"] = float(body.holdSeconds)
     GLOBAL_SETTINGS["gapSeconds"] = float(body.gapSeconds)
+    if body.installationMode in INSTALLATION_MODES:
+        GLOBAL_SETTINGS["installationMode"] = body.installationMode
+    if body.pendulumStepMs is not None:
+        GLOBAL_SETTINGS["pendulumStepMs"] = max(100, int(body.pendulumStepMs))
     save_global_settings(GLOBAL_SETTINGS)
-
+    # Смена режима действует сразу: laptop глушит MIDI-вход, exhibition поднимает.
+    if GLOBAL_SETTINGS["installationMode"] == "laptop":
+        midi_service.close_input()
+    else:
+        midi_service.open_input()
     STATE["scenario"]["stepSeconds"] = GLOBAL_SETTINGS["stepSeconds"]
     STATE["scenario"]["holdSeconds"] = GLOBAL_SETTINGS["holdSeconds"]
     STATE["scenario"]["gapSeconds"] = GLOBAL_SETTINGS["gapSeconds"]

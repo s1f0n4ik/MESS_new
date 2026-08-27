@@ -8,6 +8,8 @@ import { CardScene } from './CardScene'
 import { audioEngine } from './audio/audioEngine'
 import { apiUrl, wsUrl } from './net/urls'
 import { getWindowDriver } from './pdf/windowDriver'
+import { InstallationModePanel } from './settings/InstallationModePanel'
+import { AudioDevicePanel } from './audio/AudioDevicePanel'
 
 const role = getRole()
 const isController = role === 'pc1'
@@ -38,7 +40,15 @@ function MainApp() {
   const [localSettings, setLocalSettings] = useState({
     serverHost: initialLocalSettings.serverHost || '',
     audioEnabled: initialLocalSettings.audioEnabled !== false, // по умолчанию вкл
+    audioMonitorSinkId: initialLocalSettings.audioMonitorSinkId || '',
+    audioVibroSinkId: initialLocalSettings.audioVibroSinkId || '',
+    vibroEnabled: initialLocalSettings.vibroEnabled === true,
   })
+  const updateLocalSettings = (patch) => {
+    saveLocalSettings(patch)
+    setLocalSettings((s) => ({ ...s, ...patch }))
+  }
+
 
   const [globalSettings, setGlobalSettings] = useState({
     stepSeconds: '',
@@ -72,6 +82,11 @@ function MainApp() {
   useEffect(() => {
     audioEngine.setEnabled(localSettings.audioEnabled !== false)
     audioEngine.bindUnlock()
+    audioEngine.applyOutputs({
+      monitorSinkId: localSettings.audioMonitorSinkId,
+      vibroSinkId: localSettings.audioVibroSinkId,
+      vibroEnabled: localSettings.vibroEnabled,
+    })
     audioEngine.startKeepAliveLoop()
     return () => audioEngine.stopKeepAliveLoop()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -505,7 +520,8 @@ function MainApp() {
                   TEST RUN использует свои короткие тайминги и эти значения игнорирует.
                 </div>
               </div>
-
+              <AudioDevicePanel settings={localSettings} onChange={updateLocalSettings} />
+              <InstallationModePanel serverHost={localSettings.serverHost} />
               <MidiPanel serverHost={localSettings.serverHost} />
             </>
           )}

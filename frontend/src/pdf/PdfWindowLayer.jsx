@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { pdfUrl } from '../net/urls'
+import { usePdfMeta } from './pdfMeta'
 import { PdfDocument } from './PdfDocument'
 
 // pdf2.pdf -> «Текст 2». Заказчик говорит «текстами», а не «пдфами».
@@ -21,10 +22,24 @@ export function PdfWindowLayer({ state, myRole, serverHost = '' }) {
     setOverride(null)
   }, [token])
 
+  // mtime файлов — для cache-buster. Ключ обновления — token,
+  // то есть мета перечитывается на каждое открытие/переключение круга.
+  const meta = usePdfMeta(serverHost, token)
+
+  const tabs = Array.isArray(win?.tabs) ? win.tabs : []
+  const active = override && tabs.includes(override) ? override : serverActive
+
+  // useMemo обязателен: если бы v вычислялся заново на каждый рендер
+  // (например, через Date.now()), PdfDocument перезагружал бы файл бесконечно.
+  const activeUrl = useMemo(() => {
+    if (!active) return null
+    const base = pdfUrl(active, serverHost)
+    const v = meta?.[active]?.mtime
+    return v ? `${base}?v=${v}` : base
+  }, [active, serverHost, meta])
+
   if (!win || !win.visible) return null
 
-  const tabs = Array.isArray(win.tabs) ? win.tabs : []
-  const active = override && tabs.includes(override) ? override : serverActive
   const showTabs = tabs.length > 1
 
   return (
@@ -70,12 +85,8 @@ export function PdfWindowLayer({ state, myRole, serverHost = '' }) {
       )}
 
       <div style={{ flex: '1 1 auto', minHeight: 0 }}>
-        {active ? (
-          <PdfDocument
-            key={active}
-            url={pdfUrl(active, serverHost)}
-            resetKey={token}
-          />
+        {activeUrl ? (
+          <PdfDocument key={active} url={activeUrl} resetKey={token} />
         ) : null}
       </div>
     </div>

@@ -106,6 +106,9 @@ class MidiService:
 
     def open_input(self):
         self.close_input()
+        if not self.midi_allowed():
+            self._log("midi_off_laptop_mode")
+            return False
         if not self.settings.get("enabled"):
             self._log("disabled")
             return False
@@ -163,6 +166,9 @@ class MidiService:
             pass
 
     async def _handle(self, m):
+        if not self.midi_allowed():
+            self._log("ignored_laptop_mode", note=m.get("note"))
+            return
         ch, note = m["channel"], m["note"]
 
         key = f"{ch}:{note}"
@@ -208,6 +214,8 @@ class MidiService:
     def final_hold_role(self):
         return None
 
+    def midi_allowed(self):
+        return True
     # ---------- отправка ----------
     async def send_test_note(self, note=None, velocity=None, channel=None, duration_ms=None):
         out = self._out_port or self.open_output()
@@ -253,6 +261,7 @@ class MidiService:
             "ports": ports,
             "settings": self.settings,
             "log": list(self.log)[:60],
+            "midiAllowed": bool(self.midi_allowed()),
         }
 
 

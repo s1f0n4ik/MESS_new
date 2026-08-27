@@ -4,10 +4,9 @@ const DEFAULTS = {
   role: 'pc1',
   serverHost: '',
   audioEnabled: true,
-  midiInputId: '',
-  midiOutputId: '',
-  midiFilterEnabled: true,
-  midiFilterChannel: 2,
+  audioMonitorSinkId: '',
+  audioVibroSinkId: '',
+  vibroEnabled: false,
 }
 
 function normalize(raw = {}) {
@@ -15,15 +14,16 @@ function normalize(raw = {}) {
     role: typeof raw.role === 'string' ? raw.role : DEFAULTS.role,
     serverHost: typeof raw.serverHost === 'string' ? raw.serverHost : DEFAULTS.serverHost,
     audioEnabled: typeof raw.audioEnabled === 'boolean' ? raw.audioEnabled : DEFAULTS.audioEnabled,
-    midiInputId: typeof raw.midiInputId === 'string' ? raw.midiInputId : DEFAULTS.midiInputId,
-    midiOutputId: typeof raw.midiOutputId === 'string' ? raw.midiOutputId : DEFAULTS.midiOutputId,
-    midiFilterEnabled:
-      typeof raw.midiFilterEnabled === 'boolean'
-        ? raw.midiFilterEnabled
-        : DEFAULTS.midiFilterEnabled,
-    midiFilterChannel: Number.isFinite(Number(raw.midiFilterChannel))
-      ? Number(raw.midiFilterChannel)
-      : DEFAULTS.midiFilterChannel,
+    audioMonitorSinkId:
+      typeof raw.audioMonitorSinkId === 'string'
+        ? raw.audioMonitorSinkId
+        : DEFAULTS.audioMonitorSinkId,
+    audioVibroSinkId:
+      typeof raw.audioVibroSinkId === 'string'
+        ? raw.audioVibroSinkId
+        : DEFAULTS.audioVibroSinkId,
+    vibroEnabled:
+      typeof raw.vibroEnabled === 'boolean' ? raw.vibroEnabled : DEFAULTS.vibroEnabled,
   }
 }
 

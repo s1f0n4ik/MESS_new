@@ -1,8 +1,8 @@
 """Разрешение путей к изменяемым данным.
 
-В dev это папка backend/. В собранном .exe — папка рядом с .exe,
-потому что onefile-бандл распаковывается в TEMP и удаляется при выходе:
-всё, что должно переживать перезапуск (настройки, PDF), обязано лежать вне него.
+Dev: папка backend/. Собранный .exe на Windows: %LOCALAPPDATA%\\Postcards —
+Program Files защищён от записи, а onefile-бандл распаковывается в TEMP
+и удаляется при выходе. POSTCARDS_BASE_DIR остаётся как переопределение.
 """
 import os
 import sys
@@ -14,6 +14,8 @@ def base_dir() -> Path:
     if env:
         return Path(env)
     if getattr(sys, "frozen", False):
+        if sys.platform == "win32" and os.environ.get("LOCALAPPDATA"):
+            return Path(os.environ["LOCALAPPDATA"]) / "Postcards"
         return Path(sys.executable).parent
     return Path(__file__).resolve().parent
 

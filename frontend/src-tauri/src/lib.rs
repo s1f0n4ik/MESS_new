@@ -39,12 +39,20 @@ fn parse_args() -> Launch {
             .and_then(|i| args.get(i + 1))
             .cloned()
     };
+
+    // Ни одного нашего флага нет = двойной клик по ярлыку без аргументов.
+    // Ноутбучный сценарий «поставил и запустил»: одиночная машина,
+    // сервер+сцена+админка. Для выставочных pc2-pc4 ярлыки задают
+    // --role/--server явно, и тогда умолчания не действуют.
+    let known = ["--role", "--server", "--serve", "--admin", "--no-fullscreen"];
+    let bare = !args.iter().any(|a| known.contains(&a.as_str()));
+
     let role = get("--role").unwrap_or_else(|| "pc1".to_string());
     let server = get("--server").unwrap_or_else(|| "http://localhost:8787".to_string());
     Launch {
-        is_server: args.iter().any(|a| a == "--serve"),
+        is_server: bare || args.iter().any(|a| a == "--serve"),
         fullscreen: !args.iter().any(|a| a == "--no-fullscreen"),
-        admin: args.iter().any(|a| a == "--admin"),
+        admin: bare || args.iter().any(|a| a == "--admin"),
         role,
         server,
     }
@@ -163,6 +171,7 @@ async fn open_pdf_window(
         .decorations(false)
         .resizable(false)
         .visible(true)
+        .zoom_hotkeys_enabled(false)
         .build()
         .map_err(|e| {
             println!("[rs] ERR build: {e}");
@@ -276,9 +285,10 @@ pub fn run() {
                 "main",
                 WebviewUrl::App(format!("index.html?{}", query).into()),
             )
-            .title("Postcards")
+            .title("Heritage")
             .inner_size(1600.0, 900.0)
             .fullscreen(launch.fullscreen)
+            .zoom_hotkeys_enabled(false)
             .build()?;
             let _ = win.set_focus();
 
