@@ -2,6 +2,12 @@
 
 Важно: rtmidi вызывает колбэк из своего потока. Прямой вызов apply_action оттуда —
 гонка за STATE. Поэтому колбэк только кладёт сообщение в asyncio-очередь.
+
+Два слоя лога:
+  raw_log — ВСЁ, что пришло на порты (монитор, до дедупа/фильтра/маппинга);
+  log     — решения сервиса (input_open, filtered, unmapped, dispatch, ...).
+Пустой монитор при открытом порте = нота не дошла до Windows. Полный монитор
+при пустом log = проблема в канале/маппинге.
 """
 import asyncio
 import time
@@ -21,6 +27,11 @@ from midi_config import (
 )
 
 LOG_LIMIT = 120
+RAW_LOG_LIMIT = 200
+
+# Служебный поток (MIDI clock — 24 сообщения на четверть, тысячи в минуту):
+# в монитор не пишем, только считаем, иначе ноты в нём не найти.
+NOISY_TYPES = {"clock", "active_sensing", "songpos", "start", "stop", "continue", "tick"}
 
 
 def _pick_port(names, hint):
@@ -42,6 +53,13 @@ class MidiService:
     def __init__(self):
         self.settings = load_midi_settings()
         self.log = deque(maxlen=LOG_LIMIT)
+        self.raw_log = deque(maxlen=RAW_LOG_LIMIT)
+        self.msg_count = 0
+        self.noisy_count = 0
+        self.last_msg_at = None
+        self.last_msg_port = None
+        self.monitor_all = False
+        self._monitor_ports: dict[str, object] = {}
         self.queue: asyncio.Queue | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self._in_port = None
@@ -68,6 +86,14 @@ class MidiService:
         self.log.appendleft(entry)
         print(f"[midi] {tag} {kw}", flush=True)
 
+    def clear_log(self):
+        self.log.clear()
+        self.raw_log.clear()
+        self.msg_count = 0
+        self.noisy_count = 0
+        self.last_msg_at = None
+        self.last_msg_port = None
+
     # ---------- жизненный цикл ----------
     async def start(self, apply_action, broadcast):
         self._apply = apply_action
@@ -79,6 +105,7 @@ class MidiService:
 
     async def stop(self):
         self.close_input()
+        self._close_monitor_ports()
         self.close_output()
         if self._task:
             self._task.cancel()
@@ -106,6 +133,8 @@ class MidiService:
 
     def open_input(self):
         self.close_input()
+        # Монитор мог держать порт, который сейчас станет основным (MME — один клиент).
+        self._close_monitor_ports()
         if not self.midi_allowed():
             self._log("midi_off_laptop_mode")
             return False
@@ -113,15 +142,25 @@ class MidiService:
             self._log("disabled")
             return False
         names = self.list_ports()["inputs"]
-        target = _pick_port(names, self.settings.get("inputName"))
+        hint = self.settings.get("inputName") or ""
+        target = _pick_port(names, hint)
         if not target:
             self.last_error = "no MIDI inputs found"
             self._log("no_input", available=names)
             return False
         try:
-            self._in_port = mido.open_input(target, callback=self._on_message)
+            self._in_port = mido.open_input(
+                target, callback=lambda m, p=target: self._on_message(m, p)
+            )
             self.last_error = None
-            self._log("input_open", port=target)
+            if hint and hint.lower() not in target.lower():
+                # Видно прямо в логе, что порт не тот, который просили.
+                self._log("input_open", port=target,
+                          reason=f"запрошен «{hint}», его нет — взят первый доступный")
+            else:
+                self._log("input_open", port=target)
+            if self.monitor_all:
+                self._open_monitor_ports()
             return True
         except Exception as e:
             self.last_error = f"open_input({target}): {e}"
@@ -143,49 +182,118 @@ class MidiService:
             self._log("output_error", error=str(e))
             return None
 
+    # ---------- монитор всех входов (диагностика) ----------
+    def _open_monitor_ports(self):
+        self._close_monitor_ports()
+        main = getattr(self._in_port, "name", None)
+        for name in self.list_ports()["inputs"]:
+            if name == main:
+                continue
+            try:
+                self._monitor_ports[name] = mido.open_input(
+                    name, callback=lambda m, p=name: self._on_message(m, p, monitor=True)
+                )
+                self._log("monitor_open", port=name)
+            except Exception as e:
+                # Типично: порт занят другой программой (Windows MME — один клиент).
+                self._log("monitor_error", port=name, error=str(e))
+
+    def _close_monitor_ports(self):
+        for port in self._monitor_ports.values():
+            try:
+                port.close()
+            except Exception:
+                pass
+        self._monitor_ports = {}
+
+    def set_monitor_all(self, on: bool):
+        self.monitor_all = bool(on)
+        if self.monitor_all:
+            self._open_monitor_ports()
+        else:
+            self._close_monitor_ports()
+            self._log("monitor_off")
+        return self.monitor_all
+
     # ---------- приём ----------
-    def _on_message(self, msg):
-        """Вызывается из потока rtmidi. Только кладём в очередь."""
-        if msg.type != "note_on" or msg.velocity == 0:
+    def _on_message(self, msg, port=None, monitor=False):
+        """Поток rtmidi: считаем, собираем запись, кладём в очередь. Никакой логики."""
+        if msg.type in NOISY_TYPES:
+            self.noisy_count += 1
             return
+        entry = {"at": time.time(), "type": msg.type, "port": port, "monitor": bool(monitor)}
+        ch = getattr(msg, "channel", None)
+        if ch is not None:
+            entry["channel"] = ch + 1
+        for k in ("note", "velocity", "control", "value", "program", "pitch"):
+            if hasattr(msg, k):
+                entry[k] = getattr(msg, k)
+        if msg.type == "sysex":
+            entry["len"] = len(msg.data)
         if self.loop and self.queue:
-            self.loop.call_soon_threadsafe(
-                self.queue.put_nowait,
-                {"channel": msg.channel + 1, "note": msg.note, "velocity": msg.velocity},
-            )
+            self.loop.call_soon_threadsafe(self.queue.put_nowait, entry)
 
     async def _consume(self):
         try:
             while True:
                 item = await self.queue.get()
                 try:
-                    await self._handle(item)
+                    await self._ingest(item)
                 except Exception as e:
                     self._log("handle_error", error=str(e))
         except asyncio.CancelledError:
             pass
 
+    async def _ingest(self, e):
+        """Единая точка входа для реальных и имитированных сообщений."""
+        self.raw_log.appendleft(e)
+        self.msg_count += 1
+        self.last_msg_at = e["at"]
+        self.last_msg_port = e.get("port")
+        print(
+            f"[midi-in] {e.get('port')} {e['type']} ch={e.get('channel')} "
+            f"note={e.get('note')} vel={e.get('velocity')}"
+            + (" (monitor only)" if e.get("monitor") else ""),
+            flush=True,
+        )
+        if e.get("monitor"):
+            return  # чужой вход: показываем, не исполняем — иначе дубли
+        if e["type"] != "note_on" or not e.get("velocity"):
+            return
+        await self._handle({
+            "channel": e.get("channel"), "note": e["note"],
+            "velocity": e["velocity"], "port": e.get("port"),
+        })
+
+    async def simulate(self, note, channel=None):
+        ch = channel or int(self.settings.get("filterChannel", 2))
+        await self._ingest({
+            "at": time.time(), "type": "note_on", "port": "simulate", "monitor": False,
+            "channel": int(ch), "note": int(note), "velocity": 100,
+        })
+
     async def _handle(self, m):
         if not self.midi_allowed():
             self._log("ignored_laptop_mode", note=m.get("note"))
             return
-        ch, note = m["channel"], m["note"]
+        ch, note, port = m["channel"], m["note"], m.get("port")
 
         key = f"{ch}:{note}"
         now = time.time() * 1000.0
         last = self._dedupe.get(key, 0.0)
         if now - last < DEDUPE_WINDOW_MS:
-            self._log("deduped", channel=ch, note=note)
+            self._log("deduped", channel=ch, note=note, port=port)
             return
         self._dedupe[key] = now
 
         if self.settings.get("filterEnabled") and ch != int(self.settings.get("filterChannel", 2)):
-            self._log("filtered", channel=ch, note=note)
+            self._log("filtered", channel=ch, note=note, port=port,
+                      reason=f"ждём ch{self.settings.get('filterChannel')}")
             return
 
         hit = match_action(self.settings.get("mapping") or [], ch, note)
         if not hit:
-            self._log("unmapped", channel=ch, note=note)
+            self._log("unmapped", channel=ch, note=note, port=port)
             return
 
         spec = action_to_spec(hit["action"])
@@ -194,30 +302,38 @@ class MidiService:
             return
 
         payload = dict(spec.get("payload") or {})
+        payload["via"] = "midi"  # main.py отличает ноту Reaper от кнопки в админке
         if spec["type"] == "launch":
             if "role" not in payload:
                 payload["role"] = self.final_hold_role() or "pc4"
             if not self.in_final_hold():
-                self._log("launch_ignored", channel=ch, note=note,
-                          reason="not in final_hold")
+                self._log("launch_ignored", channel=ch, note=note, port=port,
+                          reason=f"not in final_hold ({self.scenario_brief()})")
                 return
 
-        self._log("dispatch", channel=ch, note=note, action=hit["action"], type=spec["type"])
+        self._log("dispatch", channel=ch, note=note, port=port,
+                  action=hit["action"], type=spec["type"])
         await self._apply(spec["type"], payload)
         if self._broadcast:
             await self._broadcast("midi_action")
 
+    # Три хука переопределяются из lifespan в main.py — модуль не импортирует STATE.
     def in_final_hold(self):
         return True
 
-    # переопределяется из роутера, чтобы не тянуть STATE в этот модуль
     def final_hold_role(self):
         return None
 
     def midi_allowed(self):
         return True
+
+    def scenario_brief(self):
+        return ""
+
     # ---------- отправка ----------
-    async def send_test_note(self, note=None, velocity=None, channel=None, duration_ms=None):
+    async def send_test_note(self, note=None, velocity=None, channel=None,
+                             duration_ms=None, tag="output_test_sent"):
+        self._log(tag, note=note, channel=channel)
         out = self._out_port or self.open_output()
         if not out:
             return False
@@ -234,6 +350,15 @@ class MidiService:
         except Exception as e:
             self._log("output_test_failed", error=str(e))
             return False
+
+    async def send_scenario_started(self):
+        """Порт maybeSendMidiOut из app.js: при старте сценария от 17 кликов координатор
+        шлёт ноту 72 в Reaper — от неё Reaper отсчитывает таймлайн 61–68 и финальную 60.
+        Ноутбуки ноту не шлют: там Reaper нет."""
+        if not self.midi_allowed():
+            self._log("output_skipped", reason="laptop_mode")
+            return False
+        return await self.send_test_note(tag="output_scenario_started")
 
     def apply_settings(self, patch: dict):
         for k in ("enabled", "filterEnabled"):
@@ -262,6 +387,14 @@ class MidiService:
             "settings": self.settings,
             "log": list(self.log)[:60],
             "midiAllowed": bool(self.midi_allowed()),
+            # монитор
+            "rawLog": list(self.raw_log)[:80],
+            "msgCount": self.msg_count,
+            "noisyCount": self.noisy_count,
+            "lastMessageAt": self.last_msg_at,
+            "lastMessagePort": self.last_msg_port,
+            "monitorAll": self.monitor_all,
+            "monitorPorts": list(self._monitor_ports.keys()),
         }
 
 

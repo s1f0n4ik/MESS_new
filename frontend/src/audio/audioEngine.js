@@ -1,4 +1,6 @@
 const AUDIO_BASE = '/cards/audio'
+const VIBRO_FINAL = `${AUDIO_BASE}/vibro/final.wav`
+const CIRCLES_MAX = 4
 
 // Пустой валидный WAV — для разблокировки элемента внутри жеста.
 const SILENT_WAV =
@@ -19,6 +21,10 @@ function soundFilePath(role, clickNumber) {
   return `${AUDIO_BASE}/${role}/${encodeURIComponent(soundFileName(role, clickNumber))}`
 }
 
+function circleFilePath(n) {
+  return `${AUDIO_BASE}/circles/circle${n}.wav`
+}
+
 class AudioEngine {
   constructor() {
     this.enabled = true
@@ -27,6 +33,9 @@ class AudioEngine {
     this.vibroEnabled = false
     this.unlocked = false
     this.unlocking = false
+    // Настраиваемые дорожки с координатора (state.media.audio) и его origin.
+    this.mediaOrigin = ''
+    this.mediaAudio = null
     this._boundUnlock = () => this.unlock()
   }
 
@@ -57,40 +66,53 @@ class AudioEngine {
       el.addEventListener('playing', () =>
         console.log('[vibro] playing', el.currentSrc, 'sink=', el.sinkId || 'default')
       )
+      el.addEventListener('ended', () => console.log('[vibro] ended'))
       this.vibroEl = el
     }
     return this.vibroEl
   }
 
-  // Применение выбранных устройств вывода. Вызывается при старте
-  // и из AudioDevicePanel при каждом изменении.
+  // ---------- настраиваемые дорожки ----------
+
+  // audio: { circle1: {file, mtime}, ..., vibro_final: {...} } или null.
+  setMedia(origin, audio) {
+    this.mediaOrigin = origin || ''
+    this.mediaAudio = audio || null
+  }
+
+  // URL настраиваемого файла для слота, либо null — тогда играем встроенный.
+  _serverTrack(slot) {
+    const m = this.mediaAudio && this.mediaAudio[slot]
+    if (!m || !m.file) return null
+    return `${this.mediaOrigin}/audio/${encodeURIComponent(m.file)}?v=${m.mtime || 0}`
+  }
+
+  // ---------- устройства вывода ----------
+
   async applyOutputs({ monitorSinkId, vibroSinkId, vibroEnabled } = {}) {
-    this.vibroEnabled = !!vibroEnabled && !!vibroSinkId
+    this.vibroEnabled = !!vibroEnabled
 
     const main = this._ensureEl()
     if (typeof main.setSinkId === 'function') {
       try {
         await main.setSinkId(monitorSinkId || '')
       } catch (e) {
-        // Устройство могло исчезнуть (другая машина, выдернут USB) —
-        // деградируем в системное, а не молчим.
-        console.warn('[audio] monitor setSinkId failed:', e && e.name)
+        console.warn('[audio] monitor setSinkId failed:', e && e.name, '→ системное')
         try { await main.setSinkId('') } catch {}
       }
     }
 
     if (this.vibroEnabled) {
       const v = this._ensureVibroEl()
-      if (typeof v.setSinkId !== 'function') {
-        console.warn('[vibro] setSinkId не поддерживается — вибро выключен')
-        this.vibroEnabled = false
-        return
-      }
-      try {
-        await v.setSinkId(vibroSinkId)
-      } catch (e) {
-        console.warn('[vibro] setSinkId failed:', e && e.name, '— вибро выключен')
-        this.vibroEnabled = false
+      if (typeof v.setSinkId === 'function') {
+        try {
+          await v.setSinkId(vibroSinkId || '')
+        } catch (e) {
+          console.warn('[vibro] setSinkId failed:', e && e.name, '→ системное')
+          try { await v.setSinkId('') } catch {}
+        }
+      } else if (vibroSinkId) {
+        console.warn('[vibro] setSinkId не поддерживается — вибро пойдёт в системное устройство')
       }
     }
   }
@@ -101,18 +123,27 @@ class AudioEngine {
   }
 
   stop() {
-    for (const el of [this.el, this.vibroEl]) {
-      if (!el) continue
-      try {
-        el.pause()
-        el.currentTime = 0
-      } catch (_e) {}
-    }
+    if (!this.el) return
+    try {
+      this.el.pause()
+      this.el.currentTime = 0
+    } catch (_e) {}
   }
 
-  // ВАЖНО: вызывается синхронно из обработчика жеста.
-  // Громкость НЕ трогаем: WAV и так беззвучный, а манипуляции
-  // с volume при двойном вызове оставляли элемент на нуле навсегда.
+  stopVibro() {
+    if (!this.vibroEl) return
+    try {
+      this.vibroEl.pause()
+      this.vibroEl.currentTime = 0
+    } catch (_e) {}
+  }
+
+  stopAll() {
+    this.stop()
+    this.stopVibro()
+  }
+
+  // ВАЖНО: вызывается синхронно из обработчика жеста. Громкость не трогаем.
   unlock() {
     if (this.unlocked || this.unlocking) return
     this.unlocking = true
@@ -126,7 +157,6 @@ class AudioEngine {
     }
     if (p && typeof p.then === 'function') {
       p.then(finish).catch((err) => {
-        // AbortError здесь безвреден: жест уже зачтён элементу.
         finish()
         console.debug('[audio] unlock warning:', err && err.name)
       })
@@ -134,45 +164,84 @@ class AudioEngine {
       finish()
     }
 
-    // Тем же жестом разблокируем вибро-элемент: без этого его первый
-    // play() упрётся в автоплей-политику.
+    // Тем же жестом разблокируем вибро-элемент: финал играет без клика.
     const v = this._ensureVibroEl()
     v.src = SILENT_WAV
     const pv = v.play()
     if (pv && typeof pv.catch === 'function') pv.catch(() => {})
   }
 
-  _playVibro(role, n) {
-    if (!this.vibroEnabled) return
-    const v = this._ensureVibroEl()
-    v.volume = 1
-    v.muted = false
-    // ЗАМЕНИТЬ на vibroFilePath(role, n), когда заказчица пришлёт дорожки.
-    v.src = soundFilePath(role, n)
-    try { v.currentTime = 0 } catch (_e) {}
-    const p = v.play()
-    if (p && typeof p.catch === 'function') {
-      p.catch((err) => console.warn('[vibro] play failed:', err && err.name))
-    }
-  }
-
-  // Резкий обрыв предыдущего + новый звук на ТОМ ЖЕ элементе.
-  play(role, clickNumber) {
-    if (!this.enabled) return
+  // Общий путь для монитор-канала: обрыв предыдущего + новый src на том же элементе.
+  _playOnMain(src, onFail) {
     const el = this._ensureEl()
-    const src = soundFilePath(role, clickNumber)
     try {
       el.pause()
       el.currentTime = 0
     } catch (_e) {}
-    // Страховка от любых прошлых сбоев: элемент всегда звучащий.
     el.volume = 1
     el.muted = false
     el.src = src
-    el.play().catch((err) => {
-      console.warn('[audio] play failed:', err && err.name, err && err.message, src)
+    const p = el.play()
+    if (p && typeof p.catch === 'function') {
+      p.catch((err) => {
+        if (onFail) onFail(err)
+        else console.warn('[audio] play failed:', err && err.name, err && err.message, src)
+      })
+    }
+  }
+
+  // Звук клика открытки (встроенные, не настраиваются).
+  play(role, clickNumber) {
+    if (!this.enabled) return
+    this._playOnMain(soundFilePath(role, clickNumber))
+  }
+
+  // Встроенный звук волны: circle{N}.wav, нет — откат на circle1.wav.
+  _playBundledCircle(num) {
+    const src = circleFilePath(num)
+    this._playOnMain(src, (err) => {
+      if (num !== 1 && err && err.name === 'NotSupportedError') {
+        console.log(`[audio] circle${num}.wav не найден → circle1.wav`)
+        this._playOnMain(circleFilePath(1))
+        return
+      }
+      console.warn('[audio] circle play failed:', err && err.name, err && err.message, src)
     })
-    this._playVibro(role, clickNumber)
+  }
+
+  // Звук начала волны: настраиваемый с координатора, иначе встроенный.
+  playCircle(n) {
+    if (!this.enabled) return
+    const num = Math.max(1, Math.min(CIRCLES_MAX, Number(n) || 1))
+    const custom = this._serverTrack(`circle${num}`)
+    if (!custom) {
+      this._playBundledCircle(num)
+      return
+    }
+    this._playOnMain(custom, (err) => {
+      console.warn('[audio] custom circle failed:', err && err.name, custom, '→ встроенный')
+      this._playBundledCircle(num)
+    })
+  }
+
+  // Финальная вибро-дорожка: настраиваемая, иначе встроенная final.wav.
+  playVibroFinal() {
+    if (!this.vibroEnabled) {
+      console.log('[vibro] канал выключен — финал пропущен')
+      return
+    }
+    const v = this._ensureVibroEl()
+    try {
+      v.pause()
+      v.currentTime = 0
+    } catch (_e) {}
+    v.volume = 1
+    v.muted = false
+    v.src = this._serverTrack('vibro_final') || VIBRO_FINAL
+    const p = v.play()
+    if (p && typeof p.catch === 'function') {
+      p.catch((err) => console.warn('[vibro] play failed:', err && err.name, err && err.message))
+    }
   }
 
   bindUnlock() {

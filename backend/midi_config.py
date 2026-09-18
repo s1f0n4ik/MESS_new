@@ -3,9 +3,7 @@
 """
 import json
 from pathlib import Path
-
-BASE_DIR = Path(__file__).resolve().parent
-MIDI_SETTINGS_PATH = BASE_DIR / "midi-settings.json"
+from paths import MIDI_SETTINGS_FILE as MIDI_SETTINGS_PATH
 
 LEGACY_CHANNEL = 2
 LEGACY_OUTPUT_NOTE = 72
@@ -20,16 +18,16 @@ MIDI_ACTIONS = [
     "open_pc1", "open_pc2", "open_pc3", "open_pc4",
     "close_pc1", "close_pc2", "close_pc3", "close_pc4",
 ]
-
+# нота 72 по 17 кликам
 LEGACY_MAPPING = [
     {"channel": 2, "note": 60, "action": "launch"},
     {"channel": 2, "note": 61, "action": "open_pc1"},
-    {"channel": 2, "note": 62, "action": "close_pc1"},
-    {"channel": 2, "note": 63, "action": "open_pc2"},
-    {"channel": 2, "note": 64, "action": "close_pc2"},
-    {"channel": 2, "note": 65, "action": "open_pc3"},
-    {"channel": 2, "note": 66, "action": "close_pc3"},
-    {"channel": 2, "note": 67, "action": "open_pc4"},
+    {"channel": 2, "note": 62, "action": "open_pc2"},
+    {"channel": 2, "note": 63, "action": "close_pc1"},
+    {"channel": 2, "note": 64, "action": "open_pc3"},
+    {"channel": 2, "note": 65, "action": "close_pc2"},
+    {"channel": 2, "note": 66, "action": "open_pc4"},
+    {"channel": 2, "note": 67, "action": "close_pc3"},
     {"channel": 2, "note": 68, "action": "close_pc4"},
     {"channel": 2, "note": 69, "action": "minimize_all_windows"},
 ]

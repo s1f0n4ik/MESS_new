@@ -7,6 +7,12 @@ const DEFAULTS = {
   audioMonitorSinkId: '',
   audioVibroSinkId: '',
   vibroEnabled: false,
+  vibroDelaySeconds: 120, // пауза от входа в final_hold до вибро-финала
+}
+
+function num(v, fallback) {
+  const n = Number(v)
+  return Number.isFinite(n) && n >= 0 ? n : fallback
 }
 
 function normalize(raw = {}) {
@@ -24,6 +30,7 @@ function normalize(raw = {}) {
         : DEFAULTS.audioVibroSinkId,
     vibroEnabled:
       typeof raw.vibroEnabled === 'boolean' ? raw.vibroEnabled : DEFAULTS.vibroEnabled,
+    vibroDelaySeconds: num(raw.vibroDelaySeconds, DEFAULTS.vibroDelaySeconds),
   }
 }
 

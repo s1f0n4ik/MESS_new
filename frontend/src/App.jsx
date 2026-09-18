@@ -10,6 +10,11 @@ import { apiUrl, wsUrl } from './net/urls'
 import { getWindowDriver } from './pdf/windowDriver'
 import { InstallationModePanel } from './settings/InstallationModePanel'
 import { AudioDevicePanel } from './audio/AudioDevicePanel'
+import { MediaPanel } from './settings/MediaPanel'
+import { serverOrigin } from './net/origin'
+import { usePdfWindowHotkeys, PdfMinimizeButton, togglePdfWindows } from './pdf/pdfWindowControls'
+import { StandardTimingButton } from './settings/StandardTimingButton'
+import { CoordinatorAddressPanel } from './settings/CoordinatorAddressPanel'
 
 const role = getRole()
 const isController = role === 'pc1'
@@ -43,6 +48,7 @@ function MainApp() {
     audioMonitorSinkId: initialLocalSettings.audioMonitorSinkId || '',
     audioVibroSinkId: initialLocalSettings.audioVibroSinkId || '',
     vibroEnabled: initialLocalSettings.vibroEnabled === true,
+    vibroDelaySeconds: initialLocalSettings.vibroDelaySeconds ?? 120,
   })
   const updateLocalSettings = (patch) => {
     saveLocalSettings(patch)
@@ -65,13 +71,15 @@ function MainApp() {
   useEffect(() => {
     if (!adminAllowed) return
     const onKey = (e) => {
+      if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return
       if (e.code === 'KeyM') setMenuOpen((v) => !v)
       if (e.key === 'Escape') setMenuOpen(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [adminAllowed])
-
+    // P — свернуть/вернуть PDF-окна этой машины (только Tauri, внутри хука проверка).
+  usePdfWindowHotkeys(false)
   // тик 2 раза в секунду — освежаем relative-время в Devices и ETA таймера
   useEffect(() => {
     const id = setInterval(() => forceTick((n) => n + 1), 500)
@@ -101,6 +109,54 @@ function MainApp() {
     }
     prevClicksRef.current = next
   }, [state?.clicksByRole])
+
+    // Звук начала волны: играем при приросте waveSoundSeq.
+  // Первое пришедшее состояние только запоминаем — при заходе на страницу
+  // посреди сценария звук не нужен.
+  const prevWaveSeqRef = useRef(null)
+  useEffect(() => {
+    const sc = state?.scenario
+    if (!sc) return
+    const seq = Number(sc.waveSoundSeq || 0)
+    if (prevWaveSeqRef.current === null) {
+      prevWaveSeqRef.current = seq
+      return
+    }
+    if (seq > prevWaveSeqRef.current) {
+      audioEngine.playCircle(Number(sc.waveSoundWave || 1))
+    }
+    prevWaveSeqRef.current = seq
+  }, [state?.scenario?.waveSoundSeq])
+
+    // Вибро-финал: через vibroDelaySeconds после входа сценария в final_hold.
+  // Таймер локальный — вибро-устройство выбирается на этой машине, сервер
+  // не знает, у кого оно подключено. Уход из final_hold раньше срока
+  // (медиатор сбросил, нота закрыла) отменяет таймер.
+  const vibroTimerRef = useRef(null)
+  const scenarioPhase = state?.scenario?.phase
+  useEffect(() => {
+    if (scenarioPhase === 'final_hold') {
+      if (vibroTimerRef.current) return
+      const ms = Math.max(0, Number(localSettings.vibroDelaySeconds ?? 120)) * 1000
+      console.log('[vibro] final_hold → вибро через', ms / 1000, 'с')
+      vibroTimerRef.current = setTimeout(() => {
+        vibroTimerRef.current = null
+        audioEngine.playVibroFinal()
+      }, ms)
+    } else if (vibroTimerRef.current) {
+      clearTimeout(vibroTimerRef.current)
+      vibroTimerRef.current = null
+      console.log('[vibro] final_hold покинут до срока — таймер отменён')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scenarioPhase])
+
+    // Настраиваемые дорожки приходят в state.media — движок всегда знает актуальные
+  // файлы, в том числе на pc2–pc4, где меню не открывают.
+  const mediaAudio = state?.media?.audio
+  useEffect(() => {
+    audioEngine.setMedia(serverOrigin(localSettings.serverHost), mediaAudio)
+  }, [mediaAudio, localSettings.serverHost])
 
   const loadGlobalSettings = async () => {
     try {
@@ -214,10 +270,9 @@ function MainApp() {
       serverHost: localSettings.serverHost,
       audioEnabled: localSettings.audioEnabled,
     })
-    setLocalSettings({
-      serverHost: next.serverHost || '',
-      audioEnabled: next.audioEnabled !== false,
-    })
+    // next — полный нормализованный объект из localStorage, берём его целиком,
+    // иначе из стейта выпадают аудио/вибро-поля.
+    setLocalSettings((s) => ({ ...s, ...next }))
   }
 
   const openPdfManual = () => sendAction('open_role_popup', { role })
@@ -289,15 +344,24 @@ function MainApp() {
 
           {/* Диагностическая шапка */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <span>role: <b>{role}</b></span>
-            <label style={{ fontSize: 13 }}>
-              сменить:{' '}
-              <select value={role} onChange={(e) => setRole(e.target.value)}>
-                {ROLES_LIST.map((r) => (
-                  <option key={r} value={r}>{r}</option>
-                ))}
-              </select>
-            </label>
+                        <span>role: <b>{role}</b></span>
+            {window.__TAURI__ ? (
+              <button
+                onClick={() => window.__TAURI__.core.invoke('reset_launch_config')}
+                title="Стирает launch.json и перезапускает приложение с экраном выбора роли"
+              >
+                ⚙ Сменить роль / сервер этой машины…
+              </button>
+            ) : (
+              <label style={{ fontSize: 13 }}>
+                сменить:{' '}
+                <select value={role} onChange={(e) => setRole(e.target.value)}>
+                  {ROLES_LIST.map((r) => (
+                    <option key={r} value={r}>{r}</option>
+                  ))}
+                </select>
+              </label>
+            )}
             <span>ws: {connected ? '🟢 online' : '🔴 offline'}</span>
           </div>
 
@@ -314,7 +378,7 @@ function MainApp() {
               )
             })}
           </div>
-
+          <CoordinatorAddressPanel serverHost={localSettings.serverHost} />
           {/* Тумблер звука — доступен на всех ролях */}
           <label style={{ fontSize: 13, display: 'block', margin: '8px 0' }}>
             <input
@@ -362,6 +426,11 @@ function MainApp() {
               <div className="toolbar">
                 <button onClick={openPdfManual}>Open PDF (local)</button>
                 <button onClick={closePdfManual}>Close PDF (local)</button>
+                {window.__TAURI__ && (
+                  <button onClick={togglePdfWindows} title="Клавиша P">
+                    ▣ Свернуть / вернуть PDF-окна
+                  </button>
+                )}
                 <button onClick={() => sendAction('launch', { force: true })}>
                   Launch (force close in final_hold)
                 </button>
@@ -513,6 +582,17 @@ function MainApp() {
                     {settingsSaving ? 'Saving...' : 'Save settings'}
                   </button>
                   <button onClick={loadGlobalSettings}>Reload settings</button>
+                  <StandardTimingButton
+                    serverHost={localSettings.serverHost}
+                    onReset={(s) =>
+                      setGlobalSettings({
+                        stepSeconds: String(s?.stepSeconds ?? ''),
+                        holdSeconds: String(s?.holdSeconds ?? ''),
+                        gapSeconds: String(s?.gapSeconds ?? ''),
+                      })
+                    }
+                    style={{ marginLeft: 8 }}
+                  />
                 </div>
                 <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
                   step — пауза между открытием/закрытием соседних ПК · hold — удержание
@@ -521,6 +601,7 @@ function MainApp() {
                 </div>
               </div>
               <AudioDevicePanel settings={localSettings} onChange={updateLocalSettings} />
+              <MediaPanel serverHost={localSettings.serverHost} media={state?.media} />
               <InstallationModePanel serverHost={localSettings.serverHost} />
               <MidiPanel serverHost={localSettings.serverHost} />
             </>
@@ -538,6 +619,7 @@ function MainApp() {
 // Отдельный роут: грузится в нативном окне Tauri либо в window.open.
 // Только читает состояние по WS, никаких identify/аудио/сцены.
 function PdfViewApp() {
+  usePdfWindowHotkeys(true)
   const params = new URLSearchParams(window.location.search)
   const myRole = params.get('role') || 'pc1'
   const serverHost = params.get('host') || ''
@@ -578,6 +660,7 @@ function PdfViewApp() {
   return (
     <div style={{ position: 'fixed', inset: 0, background: '#111', overflow: 'hidden' }}>
       <PdfWindowLayer state={state} myRole={myRole} serverHost={serverHost} />
+      <PdfMinimizeButton />
     </div>
   )
 }

@@ -1,12 +1,14 @@
 import asyncio
 import json
 import time
+import socket
 import sys
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from pathlib import Path
+import ipaddress
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -15,7 +17,9 @@ from midi_router import router as midi_router
 from midi_service import midi_service
 from pdfs_router import router as pdfs_router
 
-from paths import PDFS_DIR, GLOBAL_SETTINGS_FILE
+from paths import DATA_DIR, PDFS_DIR, GLOBAL_SETTINGS_FILE
+
+from media_admin import MediaAdmin, create_router, mount_static
 # ---------------------------------------------------------------------------
 # Константы
 # ---------------------------------------------------------------------------
@@ -42,6 +46,7 @@ PHASE_CYCLE_SETTLE = "cycle_settle"  # осела накопительная р�
 PHASE_FINAL_HOLD = "final_hold"
 PHASE_FORCE_OPEN_ALL = "force_open_all"
 PHASE_MANUAL = "manual_midi"
+PHASE_AWAIT_MIDI = "await_midi"
 
 # тайминги (боевые)
 DEFAULT_STEP_SECONDS = 2.0     # шаг sweep между ПК
@@ -59,6 +64,8 @@ SCENARIO_TICK_INTERVAL = 0.5
 DEVICE_STALE_SECONDS = 30.0
 DEVICE_SWEEP_INTERVAL = 5.0
 
+DEFAULT_VIBRO_DELAY_SECONDS = 120.0       # пауза после входа в final_hold
+DEFAULT_TEST_VIBRO_DELAY_SECONDS = 3.0
 # BASE_DIR = Path(__file__).resolve().parent
 # GLOBAL_SETTINGS_PATH = BASE_DIR / "global-settings.json"
 
@@ -79,6 +86,7 @@ def default_global_settings():
         "gapSeconds": DEFAULT_GAP_SECONDS,
         "installationMode": "exhibition",
         "pendulumStepMs": 2000,
+        "vibroDelaySeconds": DEFAULT_VIBRO_DELAY_SECONDS,
     }
 
 def load_global_settings():
@@ -87,7 +95,7 @@ def load_global_settings():
         if GLOBAL_SETTINGS_FILE.exists():
             raw = json.loads(GLOBAL_SETTINGS_FILE.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
-                for k in ("stepSeconds", "holdSeconds", "gapSeconds"):
+                for k in ("stepSeconds", "holdSeconds", "gapSeconds", "vibroDelaySeconds"):
                     if k in raw:
                         data[k] = float(raw[k])
                 if raw.get("installationMode") in INSTALLATION_MODES:
@@ -105,6 +113,7 @@ def save_global_settings(data: dict):
         "gapSeconds": float(data.get("gapSeconds", DEFAULT_GAP_SECONDS) or 0),
         "installationMode": data.get("installationMode", "exhibition"),
         "pendulumStepMs": int(data.get("pendulumStepMs", 2000)),
+        "vibroDelaySeconds": float(data.get("vibroDelaySeconds", DEFAULT_VIBRO_DELAY_SECONDS) or 0),
     }
     GLOBAL_SETTINGS_FILE.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -145,6 +154,11 @@ def initial_state():
             "finalHoldRole": "pc4",
             "dwellStartedAt": None,   # момент взвода текущего таймера
             "dwellNextAt": None,      # когда сработает следующий авто-шаг
+            "vibroFired": False,  # вибро-дорожка уже запущена в этом final_hold
+            "vibroAt": None,
+            "waveSoundSeq": 0,  # растёт на каждом старте волны; фронт играет звук по приросту
+            "waveSoundWave": 0,  # номер волны, к которой относится последний seq
+            "testVibroDelaySeconds": DEFAULT_TEST_VIBRO_DELAY_SECONDS,
             "testMode": False,
             "testRoles": [],
             # тайминги: боевые из GLOBAL_SETTINGS, тестовые — короткие
@@ -176,7 +190,11 @@ def bump_version():
 
 
 def clone_state():
-    return deepcopy(STATE)
+    st = deepcopy(STATE)
+    # Снимок медиа едет в каждом state: клиенты pc2–pc4 узнают о новых звуках
+    # без отдельного запроса. media определяется ниже, но вызывается только в рантайме.
+    st["media"] = media.snapshot()
+    return st
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +238,11 @@ def clear_scenario_timers():
     s["dwellStartedAt"] = None
     s["dwellNextAt"] = None
 
+def midi_driven(s=None) -> bool:
+    """Кто продвигает круги. Выставка — ноты Reaper (61–68), таймер молчит.
+    Ноутбуки и тест-прогон — таймер: там Reaper нет."""
+    s = s or STATE["scenario"]
+    return GLOBAL_SETTINGS.get("installationMode") != "laptop" and not s.get("testMode")
 
 # ---------------------------------------------------------------------------
 # Тайминги (боевые vs тест)
@@ -239,6 +262,38 @@ def hold_seconds(s):
 def gap_seconds(s):
     return float(s["testGapSeconds"] if s.get("testMode") else s.get("gapSeconds") or DEFAULT_GAP_SECONDS)
 
+
+def vibro_delay_seconds(s):
+    if s.get("testMode"):
+        return float(s["testVibroDelaySeconds"])
+    # Читаем из GLOBAL_SETTINGS напрямую, чтобы правка в админке
+    # действовала на уже идущий сценарий.
+    return float(GLOBAL_SETTINGS.get("vibroDelaySeconds") or DEFAULT_VIBRO_DELAY_SECONDS)
+
+
+def enter_final_hold():
+    """Единая точка входа в final_hold: из SETTLE четвёртого круга и из debug-действия.
+    Взводит таймер вибро; что происходит после него — решает ветка FINAL_HOLD в тике."""
+    s = STATE["scenario"]
+    active = s.get("cyclePhaseRoles") or list(ROLES)
+    total = len(active)
+    s["phase"] = PHASE_FINAL_HOLD
+    s["cycleStep"] = None
+    s["popupEpoch"] += 1
+    s["vibroFired"] = False
+    s["vibroAt"] = None
+    set_windows_settled(active[:total], total)
+    _set_open_flags(active[:total])
+    arm_cycle_timer(vibro_delay_seconds(s))
+    recompute_wave_settled()
+    sync_pdf_window()
+
+def mark_wave_start(n: int):
+    """Единственная точка «волна началась». Счётчик монотонный и переживает
+    close_scenario, иначе после сброса фронт не отличит новый старт от старого."""
+    s = STATE["scenario"]
+    s["waveSoundSeq"] = int(s.get("waveSoundSeq") or 0) + 1
+    s["waveSoundWave"] = int(n)
 
 def arm_cycle_timer(delay):
     s = STATE["scenario"]
@@ -342,8 +397,10 @@ def recompute_wave_settled():
 # Cycle-машина
 # ---------------------------------------------------------------------------
 def start_cycles(source=None, *, test=False):
-    """Старт первого круга. Роли круга — ВСЕГДА pc1..pc4 (свойство сценария).
-    Онлайн влияет только на то, где реально откроется окно."""
+    """Старт сценария. Роли круга — ВСЕГДА pc1..pc4 (свойство сценария).
+    Онлайн влияет только на то, где реально откроется окно.
+    Выставка: окна откроет Reaper по нотам, мы только встаём в ожидание.
+    Ноутбуки/тест: первый шаг сразу, дальше таймер."""
     s = STATE["scenario"]
     active = list(ROLES)
 
@@ -355,15 +412,26 @@ def start_cycles(source=None, *, test=False):
     s["forceOpenAll"] = False
     s["restoreAfterForce"] = None
     s["testMode"] = bool(test)
-    s["testRoles"] = get_online_roles()      # теперь это ИНФО: где видно
+    s["testRoles"] = get_online_roles()      # ИНФО: где видно
     s["cyclePhaseRoles"] = active
     s["finalHoldRole"] = active[-1]          # pc4
+    clear_scenario_timers()
+
+    if midi_driven(s):
+        s["waveIndex"] = 0
+        s["phase"] = PHASE_AWAIT_MIDI
+        s["cycleStep"] = None
+        clear_windows()
+        _set_open_flags([])
+        recompute_wave_settled()
+        sync_pdf_window()
+        print("[cycles] exhibition: awaiting Reaper (note 61)", flush=True)
+        return True
 
     s["waveIndex"] = 1
     s["phase"] = PHASE_CYCLE_OPEN
     s["cycleStep"] = 0
-    clear_scenario_timers()
-
+    mark_wave_start(1)
     opened = active[:1]
     set_windows_sweep(opened, 1)
     _set_open_flags(opened)
@@ -453,20 +521,12 @@ def cycle_tick_advance():
     # -------- SETTLE -> следующий круг или final_hold --------
     if phase == PHASE_CYCLE_SETTLE:
         if n >= total:
-            s["phase"] = PHASE_FINAL_HOLD
-            s["popupEpoch"] += 1
-            set_windows_settled(active[:total], total)
-            _set_open_flags(active[:total])
-            if s.get("testMode"):
-                arm_cycle_timer(gap_seconds(s))  # тест закроется сам
-            else:
-                clear_scenario_timers()  # бой ждёт MIDI-ноту
-            recompute_wave_settled()
-            sync_pdf_window()
+            enter_final_hold()
             return True
         s["waveIndex"] = n + 1
         s["phase"] = PHASE_CYCLE_OPEN
         s["cycleStep"] = 0
+        mark_wave_start(n + 1)
         s["popupEpoch"] += 1
         opened = active[:1]
         set_windows_sweep(opened, n + 1)
@@ -478,12 +538,21 @@ def cycle_tick_advance():
 
         # -------- FINAL_HOLD --------
     if phase == PHASE_FINAL_HOLD:
-        if s.get("testMode"):
-            close_scenario({"type": "test_run_auto_close"})
+        if not s.get("vibroFired"):
+            s["vibroFired"] = True
+            s["vibroAt"] = now_ts()
+            print("[vibro] fire", flush=True)
+            laptop = GLOBAL_SETTINGS.get("installationMode") == "laptop"
+            if s.get("testMode") or laptop:
+                # Ни тест, ни ноутбуки не получат MIDI-ноту — закрываемся сами.
+                arm_cycle_timer(gap_seconds(s))
+            else:
+                clear_scenario_timers()  # бой ждёт ноту с finalHoldRole
+            return True
+        if s.get("testMode") or GLOBAL_SETTINGS.get("installationMode") == "laptop":
+            close_scenario({"type": "final_hold_auto_close"})
             return True
         return False
-
-    return False
 
 
 # def start_test_run(source: dict | None = None):
@@ -502,6 +571,69 @@ def cycle_tick_advance():
 #     active = get_online_roles() or list(ROLES)
 #     start_cycles(active, trigger, test=False)
 
+def midi_window_step(role: str, opening: bool) -> bool:
+    """Шаг круга по ноте Reaper (выставка). True — нота обработана внутри сценария.
+    False — сценарий не ведётся по MIDI; вызывающий откатится к ручному
+    open_role/close_role (legacy-поведение нот вне сценария).
+
+    Семантика как в старом server.js: open_pcX показывает окно X с PDF текущего
+    круга, close_pcX убирает. Границы кругов выводятся из набора открытых окон:
+    пустой набор после закрытия = круг осел (накопительная раскладка), первая
+    нота открытия после этого = следующий круг. После четвёртого — final_hold.
+    """
+    s = STATE["scenario"]
+    if not midi_driven(s) or not s["active"] or s["forceOpenAll"]:
+        return False
+    phase = s.get("phase")
+    if phase in (PHASE_MANUAL, PHASE_FINAL_HOLD, PHASE_FORCE_OPEN_ALL):
+        return False
+
+    target = sanitize_role(role)
+    total = len(ROLES)
+    n = int(s.get("waveIndex") or 0)
+
+    if phase in (PHASE_AWAIT_MIDI, PHASE_CYCLE_SETTLE):
+        # Между кругами открытых окон нет — закрывать нечего.
+        if not opening:
+            print(f"[midi-step] close_{target} in {phase}: nothing open, ignored", flush=True)
+            return True
+        n += 1
+        s["waveIndex"] = n
+        mark_wave_start(n)
+        opened = [target]
+    else:
+        opened = [r for r in ROLES if s["openRoles"].get(r)]
+        if opening:
+            if target not in opened:
+                opened = [r for r in ROLES if r in opened or r == target]
+        else:
+            opened = [r for r in opened if r != target]
+
+    s["popupEpoch"] += 1
+    s["cycleStep"] = None
+    clear_scenario_timers()   # выставка: таймер во время кругов молчит
+
+    if opened:
+        s["phase"] = PHASE_CYCLE_OPEN if opening else PHASE_CYCLE_CLOSE
+        set_windows_sweep(opened, n)
+        _set_open_flags(opened)
+    elif n >= total:
+        # Четвёртый круг закрыт целиком. enter_final_hold сам выложит накопительную
+        # раскладку и взведёт вибро; дальше ждём ноту 60.
+        enter_final_hold()
+        print(f"[midi-step] wave {n} closed -> final_hold", flush=True)
+        return True
+    else:
+        s["phase"] = PHASE_CYCLE_SETTLE
+        settled = ROLES[:n]
+        set_windows_settled(settled, n)
+        _set_open_flags(settled)
+
+    recompute_wave_settled()
+    sync_pdf_window()
+    print(f"[midi-step] {'open' if opening else 'close'}_{target} wave={n}/{total} "
+          f"open={opened} phase={s['phase']}", flush=True)
+    return True
 
 def advance_wave(source: dict | None = None):
     """launch: смысл только в final_hold.
@@ -640,6 +772,7 @@ def close_scenario(source: dict | None = None, *, preserve_clicks=True,
     locks = dict(STATE["clickScenarioLockedByRole"]) if preserve_click_locks else None
     flips = deepcopy(STATE["flippedCardsByRole"]) if preserve_flips else None
     popup_epoch = STATE["scenario"]["popupEpoch"] + 1
+    wave_seq = STATE["scenario"].get("waveSoundSeq") or 0
 
     fresh = initial_state()
     STATE.clear()
@@ -654,6 +787,7 @@ def close_scenario(source: dict | None = None, *, preserve_clicks=True,
     if flips is not None:
         STATE["flippedCardsByRole"] = flips
     STATE["scenario"]["popupEpoch"] = popup_epoch
+    STATE["scenario"]["waveSoundSeq"] = wave_seq
     recompute_wave_settled()
     sync_pdf_window()
 
@@ -772,6 +906,9 @@ async def lifespan(app: FastAPI):
         midi_service.final_hold_role = lambda: STATE["scenario"].get("finalHoldRole")
         midi_service.in_final_hold = lambda: STATE["scenario"].get("phase") == PHASE_FINAL_HOLD
         midi_service.midi_allowed = lambda: GLOBAL_SETTINGS.get("installationMode") != "laptop"
+        midi_service.scenario_brief = lambda: (
+            f"phase={STATE['scenario'].get('phase')} wave={STATE['scenario'].get('waveIndex')}"
+        )
         await midi_service.start(apply_action, hub.broadcast)
         yield
     finally:
@@ -798,14 +935,115 @@ app.include_router(pdfs_router)
 # PDF_DIR.mkdir(exist_ok=True)
 app.mount("/pdfs", StaticFiles(directory=str(PDFS_DIR)), name="pdfs")
 
+# ---------------------------------------------------------------------------
+# Медиа из служебного меню: тексты (PDF) и настраиваемые звуки
+# ---------------------------------------------------------------------------
+async def _media_changed():
+    """После подмены файла — рассылаем state, чтобы все клиенты узнали новые mtime."""
+    bump_version()
+    await hub.broadcast("media_changed")
+
+
+media = MediaAdmin(DATA_DIR, pdf_dir=PDFS_DIR, on_change=_media_changed)
+app.include_router(create_router(media))   # /api/media, /api/media/import, ...
+mount_static(app, media)                    # /audio/* — настраиваемые звуки
 
 # ---------------------------------------------------------------------------
 # HTTP
 # ---------------------------------------------------------------------------
-@app.get("/api/health")
-def health():
-    return {"ok": True}
+def _addr_kind(ip: str) -> str:
+    a = ipaddress.ip_address(ip)
+    if a in ipaddress.ip_network("100.64.0.0/10"):
+        return "vpn"        # Tailscale / CGNAT — точно не стенд
+    if a in ipaddress.ip_network("192.168.0.0/16") or a in ipaddress.ip_network("172.16.0.0/12"):
+        return "lan"
+    if a in ipaddress.ip_network("10.0.0.0/8"):
+        return "lan10"      # и офисные сети, и OpenVPN (10.8.x.x) — ниже приоритетом
+    return "other"
 
+
+_KIND_RANK = {"lan": 0, "lan10": 1, "other": 2, "vpn": 3}
+_KIND_LABEL = {
+    "lan": "локальная сеть",
+    "lan10": "сеть 10.x — может быть VPN",
+    "vpn": "VPN / Tailscale",
+    "other": "прочее",
+}
+
+
+def _iface_toward(peer_ip: str):
+    """Каким своим адресом ОС дойдёт до peer_ip. UDP-connect пакетов не шлёт."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect((peer_ip, 1))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        return None
+
+
+def _all_ipv4():
+    addrs = []
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith(("127.", "169.254.")) and ip not in addrs:
+                addrs.append(ip)
+    except OSError:
+        pass
+    return addrs
+
+
+def _connected_peer_ips():
+    """IP машин, висящих на WS. Структура hub у нас своя — перебираем возможные имена коллекции."""
+    ips = []
+    for attr in ("clients", "connections", "sockets", "active"):
+        coll = getattr(hub, attr, None)
+        if coll is None:
+            continue
+        items = coll.values() if isinstance(coll, dict) else coll
+        for ws in list(items):
+            host = getattr(getattr(ws, "client", None), "host", None)
+            if host and not host.startswith("127.") and host not in ips:
+                ips.append(host)
+    return ips
+
+
+@app.get("/api/net/info")
+def net_info(request: Request):
+    addrs = _all_ipv4()
+    primary, reason = None, ""
+
+    # 1. Лучший признак — интерфейс, через который видны реальные клиенты.
+    peers = _connected_peer_ips()
+    req_host = getattr(request.client, "host", None)
+    if req_host and not req_host.startswith("127."):
+        peers.append(req_host)
+    for peer in peers:
+        ip = _iface_toward(peer)
+        if ip and not ip.startswith("127."):
+            primary, reason = ip, f"через этот адрес виден клиент {peer}"
+            if ip not in addrs:
+                addrs.insert(0, ip)
+            break
+
+    # 2. Клиентов нет — ранжируем по типу сети.
+    if not primary and addrs:
+        addrs.sort(key=lambda ip: (_KIND_RANK[_addr_kind(ip)], ip))
+        primary, reason = addrs[0], "по типу сети (клиенты пока не подключены)"
+
+    return {
+        "hostname": socket.gethostname(),
+        "primary": primary,
+        "primaryReason": reason,
+        "port": request.url.port or 8787,
+        "addresses": [
+            {"ip": ip, "kind": _addr_kind(ip), "label": _KIND_LABEL[_addr_kind(ip)]}
+            for ip in addrs
+        ],
+    }
 
 @app.get("/api/state")
 def get_state():
@@ -834,18 +1072,21 @@ async def apply_action(t: str, p: dict):
                  "clicks": STATE["clicksByRole"][role]},
                 "pc1",
             )
+            asyncio.create_task(midi_service.send_scenario_started())
         bump_version()
         await hub.broadcast("click_card")
         return {"ok": True}
 
     if t == "open_role_popup":
-        open_role(role, {"type": "manual_open", "role": role})
+        if not (p.get("via") == "midi" and midi_window_step(role, True)):
+            open_role(role, {"type": "manual_open", "role": role})
         bump_version()
         await hub.broadcast("open_role_popup")
         return {"ok": True}
 
     if t == "close_role_popup":
-        close_role(role, {"type": "manual_close", "role": role})
+        if not (p.get("via") == "midi" and midi_window_step(role, False)):
+            close_role(role, {"type": "manual_close", "role": role})
         bump_version()
         await hub.broadcast("close_role_popup")
         return {"ok": True}
@@ -899,15 +1140,8 @@ async def apply_action(t: str, p: dict):
         s["testMode"] = False
         s["cyclePhaseRoles"] = active
         s["waveIndex"] = len(active)
-        s["phase"] = PHASE_FINAL_HOLD
-        s["cycleStep"] = None
         s["finalHoldRole"] = active[-1]
-        s["popupEpoch"] += 1
-        clear_scenario_timers()
-        set_windows_settled(active, len(active))
-        _set_open_flags(active)
-        recompute_wave_settled()
-        sync_pdf_window()
+        enter_final_hold()
         bump_version()
         await hub.broadcast("debug_final_hold")
         return {"ok": True}
@@ -926,6 +1160,7 @@ class GlobalSettingsBody(BaseModel):
     gapSeconds: float
     installationMode: str | None = None
     pendulumStepMs: int | None = None
+    vibroDelaySeconds: float | None = None
 
 
 @app.post("/api/action")
@@ -947,6 +1182,8 @@ async def set_global_settings(body: GlobalSettingsBody):
         GLOBAL_SETTINGS["installationMode"] = body.installationMode
     if body.pendulumStepMs is not None:
         GLOBAL_SETTINGS["pendulumStepMs"] = max(100, int(body.pendulumStepMs))
+    if body.vibroDelaySeconds is not None:
+        GLOBAL_SETTINGS["vibroDelaySeconds"] = max(0.0, float(body.vibroDelaySeconds))
     save_global_settings(GLOBAL_SETTINGS)
     # Смена режима действует сразу: laptop глушит MIDI-вход, exhibition поднимает.
     if GLOBAL_SETTINGS["installationMode"] == "laptop":
@@ -961,6 +1198,29 @@ async def set_global_settings(body: GlobalSettingsBody):
     await hub.broadcast("global_settings_updated")
     return {"ok": True, "settings": dict(GLOBAL_SETTINGS)}
 
+TIMING_KEYS = ("stepSeconds", "holdSeconds", "gapSeconds", "pendulumStepMs", "vibroDelaySeconds")
+
+
+@app.get("/api/settings/global/defaults")
+def get_global_defaults():
+    return default_global_settings()
+
+
+@app.post("/api/settings/global/reset-timings")
+async def reset_global_timings():
+    """Кнопка «Стандартный тайминг»: боевые значения из констант. Режим не трогаем."""
+    d = default_global_settings()
+    for k in TIMING_KEYS:
+        if k in d:
+            GLOBAL_SETTINGS[k] = d[k]
+    save_global_settings(GLOBAL_SETTINGS)
+    STATE["scenario"]["stepSeconds"] = GLOBAL_SETTINGS["stepSeconds"]
+    STATE["scenario"]["holdSeconds"] = GLOBAL_SETTINGS["holdSeconds"]
+    STATE["scenario"]["gapSeconds"] = GLOBAL_SETTINGS["gapSeconds"]
+    print("[settings] timings reset to defaults", flush=True)
+    bump_version()
+    await hub.broadcast("global_settings_updated")
+    return {"ok": True, "settings": dict(GLOBAL_SETTINGS)}
 
 # ---------------------------------------------------------------------------
 # WS endpoint

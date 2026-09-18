@@ -58,7 +58,7 @@ export function AudioDevicePanel({ settings, onChange }) {
 
       <div style={{ fontSize: 13, lineHeight: 2 }}>
         <div>
-          Мониторы:{' '}
+          Мониторы (клики):{' '}
           {select(settings.audioMonitorSinkId, (v) => apply({ audioMonitorSinkId: v }))}
           <button style={{ marginLeft: 8 }} onClick={() => audioEngine.play('pc1', 1)}>
             тест ▶
@@ -71,17 +71,39 @@ export function AudioDevicePanel({ settings, onChange }) {
               checked={!!settings.vibroEnabled}
               onChange={(e) => apply({ vibroEnabled: e.target.checked })}
             />{' '}
-            Вибро-канал
+            Вибро-финал
           </label>{' '}
           {select(settings.audioVibroSinkId, (v) => apply({ audioVibroSinkId: v }))}
+          <button
+            style={{ marginLeft: 8 }}
+            disabled={!settings.vibroEnabled}
+            onClick={() => audioEngine.playVibroFinal()}
+          >
+            тест вибро ▶
+          </button>
+          <button style={{ marginLeft: 4 }} onClick={() => audioEngine.stopVibro()}>
+            ■
+          </button>
+        </div>
+        <div>
+          Задержка вибро после final_hold, сек:{' '}
+          <input
+            type="number"
+            min="0"
+            step="1"
+            value={settings.vibroDelaySeconds ?? 120}
+            onChange={(e) => onChange({ vibroDelaySeconds: Number(e.target.value) || 0 })}
+            style={{ width: 80 }}
+          />
         </div>
       </div>
 
       <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
-        Пока вибро дублирует основную дорожку на выбранное устройство.
-        Отдельные вибро-файлы подключим, когда придут от заказчицы.
-        deviceId привязан к origin: после установки прод-сборки устройства
-        нужно выбрать заново (dev и прод — разные origin).
+        Вибро-финал (/cards/audio/vibro/final.wav) играет на этой машине через выбранное
+        устройство спустя заданную задержку после входа сценария в final_hold.
+        Включать его только на той машине, к которой подключён вибродинамик
+        (или на единственном ноутбуке). deviceId привязан к origin:
+        после установки прод-сборки устройства нужно выбрать заново.
       </div>
     </div>
   )

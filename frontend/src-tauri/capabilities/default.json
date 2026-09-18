@@ -19,6 +19,7 @@
     "core:window:allow-set-fullscreen",
     "core:window:allow-set-decorations",
     "core:webview:allow-create-webview-window",
+    "dialog:default",
     {
       "identifier": "shell:allow-execute",
       "allow": [

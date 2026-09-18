@@ -5,11 +5,29 @@ import { apiUrl } from '../net/urls'
 
 const POLL_MS = 1000
 
+function fmtTimeMs(ts) {
+  const d = new Date(ts * 1000)
+  return `${d.toLocaleTimeString()}.${String(d.getMilliseconds()).padStart(3, '0')}`
+}
+
+function fmtRaw(e) {
+  const parts = [e.port || '?', e.type]
+  if (e.channel != null) parts.push(`ch${e.channel}`)
+  if (e.note != null) parts.push(`${e.note} ${noteName(e.note)}`)
+  if (e.velocity != null) parts.push(`vel ${e.velocity}`)
+  if (e.control != null) parts.push(`cc${e.control}=${e.value}`)
+  if (e.program != null) parts.push(`pgm ${e.program}`)
+  if (e.pitch != null) parts.push(`pitch ${e.pitch}`)
+  if (e.len != null) parts.push(`${e.len} байт`)
+  return parts.join(' · ')
+}
+
 export function MidiPanel({ serverHost }) {
   const [status, setStatus] = useState(null)
   const [draft, setDraft] = useState(null)   // локальные правки маппинга
   const [busy, setBusy] = useState('')
   const [simNote, setSimNote] = useState(60)
+  const [now, setNow] = useState(Date.now() / 1000)
   const draftRef = useRef(null)
   draftRef.current = draft
 
@@ -25,6 +43,8 @@ export function MidiPanel({ serverHost }) {
     [serverHost]
   )
 
+  const refresh = useCallback(() => call('/status').then(setStatus).catch(() => {}), [call])
+
   // Поллинг статуса. WS не используем: MIDI-лог не часть игрового состояния,
   // незачем гнать его всем четырём ПК в каждом broadcast.
   // Скрытая вкладка поллинг останавливает — иначе админка забивает
@@ -39,6 +59,7 @@ export function MidiPanel({ serverHost }) {
         const s = await call('/status')
         if (stopped) return
         setStatus(s)
+        setNow(Date.now() / 1000)
         // Не перетираем то, что оператор сейчас правит.
         if (draftRef.current == null) setDraft(s.settings.mapping)
       } catch {}
@@ -84,6 +105,8 @@ export function MidiPanel({ serverHost }) {
 
   // Режим ноутбуков: MIDI сознательно выключен, это не ошибка.
   const midiOff = status.midiAllowed === false
+  // Старый exe без монитора — подскажем, а не будем падать на undefined.
+  const monitorSupported = 'rawLog' in status
 
   const st = status.settings
   const inputs = status.ports?.inputs || []
@@ -93,6 +116,10 @@ export function MidiPanel({ serverHost }) {
 
   const updateRow = (idx, p) =>
     setDraft(mapping.map((r, i) => (i === idx ? { ...r, ...p } : r)))
+
+  const rawLog = status.rawLog || []
+  const ago = status.lastMessageAt ? Math.max(0, Math.round(now - status.lastMessageAt)) : null
+  const fresh = ago != null && ago <= 2
 
   return (
     <div style={{ border: '1px solid #444', padding: 12, marginTop: 12, opacity: midiOff ? 0.85 : 1 }}>
@@ -134,6 +161,85 @@ export function MidiPanel({ serverHost }) {
         </div>
       </div>
 
+      {/* ---------- Монитор входящих ---------- */}
+      <div
+        style={{
+          marginTop: 10, padding: 8, borderRadius: 6,
+          border: `1px solid ${fresh ? '#4a4' : '#555'}`,
+          background: fresh ? '#1a2a1a' : 'transparent',
+          transition: 'background .3s, border-color .3s',
+        }}
+      >
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <strong>
+            <span style={{ color: fresh ? '#6d6' : '#666' }}>●</span> Монитор входящих
+          </strong>
+          {monitorSupported ? (
+            <>
+              <span style={{ fontSize: 13 }}>
+                сообщений: <b>{status.msgCount}</b>
+                {status.noisyCount ? (
+                  <span style={{ opacity: 0.6 }}> (+{status.noisyCount} служебных: clock и т.п.)</span>
+                ) : null}
+              </span>
+              <span style={{ fontSize: 13 }}>
+                {ago == null
+                  ? <span style={{ opacity: 0.6 }}>ничего не приходило</span>
+                  : <>последнее: <b>{ago} с назад</b> с «{status.lastMessagePort}»</>}
+              </span>
+              <label style={{ fontSize: 13, marginLeft: 'auto' }}>
+                <input
+                  type="checkbox"
+                  checked={!!status.monitorAll}
+                  onChange={(e) => call('/monitor', { enabled: e.target.checked }).then(refresh)}
+                />{' '}
+                слушать все входы
+              </label>
+              <button onClick={() => call('/clear-log', {}).then(refresh)}>очистить</button>
+            </>
+          ) : (
+            <span style={{ color: '#e88', fontSize: 13 }}>
+              бэкенд без монитора — пересобери postcards-backend.exe
+            </span>
+          )}
+        </div>
+
+        {monitorSupported && status.monitorAll && (
+          <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
+            дополнительно слушаю: {status.monitorPorts?.length ? status.monitorPorts.join(' · ') : '— других входов нет —'}.
+            Ноты с них только показываются (курсивом), исполняется только основной порт.
+          </div>
+        )}
+
+        {monitorSupported && (
+          <div style={{ maxHeight: 200, overflow: 'auto', fontFamily: 'monospace', fontSize: 12, marginTop: 6 }}>
+            {rawLog.map((e, i) => {
+              const isNoteOn = e.type === 'note_on' && e.velocity > 0
+              return (
+                <div
+                  key={`${e.at}-${i}`}
+                  style={{
+                    fontStyle: e.monitor || e.port === 'simulate' ? 'italic' : 'normal',
+                    opacity: e.monitor ? 0.7 : 1,
+                    color: isNoteOn ? '#dfd' : '#bbb',
+                  }}
+                >
+                  {fmtTimeMs(e.at)} · {fmtRaw(e)}
+                  {e.monitor ? ' · [только монитор]' : ''}
+                </div>
+              )
+            })}
+            {!rawLog.length && (
+              <div style={{ opacity: 0.6 }}>
+                — пусто — {status.inputOpen
+                  ? 'порт открыт, но с него ничего не пришло. Проверь сессию rtpMIDI и выход трека в Reaper.'
+                  : 'порт закрыт.'}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <label>
           <input
@@ -144,7 +250,7 @@ export function MidiPanel({ serverHost }) {
           />{' '}
           MIDI включён
         </label>
-        <button disabled={midiOff} onClick={() => call('/reopen').then(setStatus)}>
+        <button disabled={midiOff} onClick={() => call('/reopen').then((r) => setStatus(r.status || r))}>
           переоткрыть порт
         </button>
       </div>
@@ -205,7 +311,7 @@ export function MidiPanel({ serverHost }) {
         </span>
       </div>
 
-      {/* Имитация ноты: тот же путь, что реальный вход (дедуп + фильтр + маппинг).
+      {/* Имитация ноты: тот же путь, что реальный вход (монитор + дедуп + фильтр + маппинг).
           В laptop-режиме нота дойдёт до _handle и отсеется как ignored_laptop_mode —
           кнопки не блокируем, это удобный способ убедиться, что гейт работает. */}
       <div style={{ marginTop: 12, padding: 8, border: '1px dashed #555', borderRadius: 6 }}>
@@ -277,11 +383,11 @@ export function MidiPanel({ serverHost }) {
       </div>
 
       <div style={{ marginTop: 12 }}>
-        <strong>Лог бэкенда:</strong>
+        <strong>Лог решений бэкенда:</strong>
         <div style={{ maxHeight: 220, overflow: 'auto', fontFamily: 'monospace', fontSize: 12 }}>
           {(status.log || []).map((l, i) => (
             <div key={i}>
-              {new Date(l.at * 1000).toLocaleTimeString()} · {l.tag}
+              {fmtTimeMs(l.at)} · {l.tag}
               {l.port ? ` · ${l.port}` : ''}
               {l.channel != null ? ` · ch${l.channel}` : ''}
               {l.note != null ? ` · ${l.note} ${noteName(l.note)}` : ''}
@@ -289,6 +395,7 @@ export function MidiPanel({ serverHost }) {
               {l.type ? ` → ${l.type}` : ''}
               {l.reason ? ` (${l.reason})` : ''}
               {l.error ? ` · ${l.error}` : ''}
+              {l.available ? ` · доступны: ${l.available.join(', ') || 'нет'}` : ''}
             </div>
           ))}
           {!(status.log || []).length && <div style={{ opacity: 0.6 }}>— пусто —</div>}

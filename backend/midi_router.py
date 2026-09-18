@@ -22,6 +22,15 @@ class TestNoteBody(BaseModel):
     durationMs: int | None = None
 
 
+class SimulateBody(BaseModel):
+    note: int
+    channel: int | None = None
+
+
+class MonitorBody(BaseModel):
+    enabled: bool
+
+
 @router.get("/status")
 def midi_status():
     return midi_service.status()
@@ -53,14 +62,20 @@ async def midi_test_note(body: TestNoteBody):
     return {"ok": ok}
 
 
-class SimulateBody(BaseModel):
-    note: int
-    channel: int | None = None
-
-
 @router.post("/simulate")
 async def midi_simulate(body: SimulateBody):
-    """Прогон ноты через тот же путь, что и реальный вход. Для отладки без железа."""
-    ch = body.channel or int(midi_service.settings.get("filterChannel", 2))
-    await midi_service._handle({"channel": ch, "note": int(body.note), "velocity": 100})
+    """Прогон ноты через тот же путь, что и реальный вход (включая монитор)."""
+    await midi_service.simulate(body.note, body.channel)
+    return {"ok": True}
+
+
+@router.post("/monitor")
+def midi_monitor(body: MonitorBody):
+    """Слушать все MIDI-входы системы. Ноты с чужих портов только показываются."""
+    return {"ok": True, "monitorAll": midi_service.set_monitor_all(body.enabled)}
+
+
+@router.post("/clear-log")
+def midi_clear_log():
+    midi_service.clear_log()
     return {"ok": True}
