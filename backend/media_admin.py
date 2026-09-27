@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -25,7 +26,8 @@ AUDIO_EXTS = (".wav", ".mp3", ".ogg", ".flac", ".m4a")
 
 
 class MediaAdmin:
-    def __init__(self, base_dir, pdf_dir=None, on_change: Optional[Callable] = None):
+    def __init__(self, base_dir, pdf_dir=None, on_change: Optional[Callable] = None,
+                 template_path: Optional[Path] = None):
         self.base_dir = Path(base_dir)
         self.pdf_dir = Path(pdf_dir) if pdf_dir else self.base_dir / "pdfs"
         self.audio_dir = self.base_dir / "audio"
@@ -34,6 +36,7 @@ class MediaAdmin:
         self._sources_path = self.base_dir / "media_sources.json"
         self._sources = self._load_sources()
         self._on_change = on_change
+        self.template_path = Path(template_path) if template_path else None
 
     # ---------- служебное ----------
     def _load_sources(self) -> dict:
@@ -98,7 +101,31 @@ class MediaAdmin:
             "pdfs": {s: self._describe(self.pdf_dir / f"{s}.pdf") for s in PDF_SLOTS},
             "audio": {s: self._describe(self._audio_file(s)) for s in AUDIO_SLOTS},
             "dirs": {"pdfs": str(self.pdf_dir), "audio": str(self.audio_dir)},
+            "template": {
+                "available": bool(self.template_path and self.template_path.is_file()),
+                "name": self.template_path.name if self.template_path else None,
+                "pages": 28,
+                "blocks": 14,
+            },
         }
+
+    def install_template(self) -> None:
+        if not self.template_path or not self.template_path.is_file():
+            raise HTTPException(404, "встроенный шаблон 2x2 не найден")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup_dir = self.base_dir / "pdf-template-backups" / stamp
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        for slot in PDF_SLOTS:
+            target = self.pdf_dir / f"{slot}.pdf"
+            if target.is_file():
+                shutil.copy2(target, backup_dir / target.name)
+        for slot in PDF_SLOTS:
+            target = self.pdf_dir / f"{slot}.pdf"
+            self._install(
+                target,
+                lambda tmp, source=self.template_path: shutil.copyfile(source, tmp),
+                f"встроенный шаблон 2x2, резервная копия: {backup_dir}",
+            )
 
     # ---------- запись: временный файл рядом + атомарная подмена ----------
     def _install(self, target: Path, write, source: str) -> None:
@@ -177,6 +204,12 @@ def create_router(admin: MediaAdmin) -> APIRouter:
     @r.post("/upload/{kind}/{slot}")
     async def upload_media(kind: str, slot: str, request: Request, filename: str = ""):
         admin.import_bytes(kind, slot, await request.body(), filename)
+        await admin.changed()
+        return admin.snapshot()
+
+    @r.post("/template")
+    async def install_template():
+        admin.install_template()
         await admin.changed()
         return admin.snapshot()
 

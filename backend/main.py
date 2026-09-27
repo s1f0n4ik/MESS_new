@@ -1,5 +1,7 @@
 import asyncio
+import hashlib
 import json
+import shutil
 import time
 import socket
 import sys
@@ -20,23 +22,57 @@ from pdfs_router import router as pdfs_router
 from paths import DATA_DIR, PDFS_DIR, GLOBAL_SETTINGS_FILE
 
 from media_admin import MediaAdmin, create_router, mount_static
+from pdf_editor import (
+    PdfEditorStore,
+    create_router as create_pdf_editor_router,
+    mount_static as mount_pdf_editor_static,
+)
+
+import scenario_log
+
 # ---------------------------------------------------------------------------
 # Константы
 # ---------------------------------------------------------------------------
 ROLES = ["pc1", "pc2", "pc3", "pc4"]
 CLICK_THRESHOLD = 17
+BUILD_NAME = "2026-09-26-shared-editor-template-v7"
+PDF_TEMPLATE_NAME = "Postcards_2x2_template_14_blocks.pdf"
+
+
+def build_info():
+    target = Path(sys.executable) if getattr(sys, "frozen", False) else Path(__file__)
+    try:
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()[:12]
+    except OSError:
+        digest = "unavailable"
+    return {"name": BUILD_NAME, "sha256": digest}
+
+
+BUILD_INFO = build_info()
+
+def bundled_pdf_template() -> Path:
+    root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    bundled = root / "pdfs-default" / PDF_TEMPLATE_NAME
+    if bundled.is_file() or getattr(sys, "frozen", False):
+        return bundled
+    return Path(__file__).resolve().parent.parent / "frontend" / "src-tauri" / "pdfs-default" / PDF_TEMPLATE_NAME
+
+
 def seed_pdfs_if_empty():
     """Первый запуск после установки: data/pdfs пуста — копируем дефолтные
     PDF из ресурсов установщика (лежат рядом с exe в pdfs-default)."""
     if any(PDFS_DIR.glob("*.pdf")):
         return
-    if not getattr(sys, "frozen", False):
+    template = bundled_pdf_template()
+    if template.is_file():
+        for index in range(1, 5):
+            target = PDFS_DIR / f"pdf{index}.pdf"
+            shutil.copyfile(template, target)
+            print(f"[seed] {template.name} -> {target}", flush=True)
         return
     seed = Path(sys.executable).parent / "pdfs-default"
-    if not seed.is_dir():
-        return
-    for f in seed.glob("*.pdf"):
-        (PDFS_DIR / f.name).write_bytes(f.read_bytes())
+    for f in seed.glob("pdf[1-4].pdf"):
+        shutil.copyfile(f, PDFS_DIR / f.name)
         print(f"[seed] {f.name} -> {PDFS_DIR}", flush=True)
 PHASE_IDLE = "idle"
 PHASE_CYCLE_OPEN = "cycle_open"      # sweep открытия слева-направо
@@ -47,6 +83,7 @@ PHASE_FINAL_HOLD = "final_hold"
 PHASE_FORCE_OPEN_ALL = "force_open_all"
 PHASE_MANUAL = "manual_midi"
 PHASE_AWAIT_MIDI = "await_midi"
+PHASE_BLACKOUT = "blackout"
 
 # тайминги (боевые)
 DEFAULT_STEP_SECONDS = 2.0     # шаг sweep между ПК
@@ -61,7 +98,7 @@ DEFAULT_TEST_GAP_SECONDS = 3.0
 SCENARIO_TICK_INTERVAL = 0.5
 
 # живость устройств
-DEVICE_STALE_SECONDS = 30.0
+DEVICE_STALE_SECONDS = 180.0
 DEVICE_SWEEP_INTERVAL = 5.0
 
 DEFAULT_VIBRO_DELAY_SECONDS = 120.0       # пауза после входа в final_hold
@@ -73,6 +110,17 @@ DEFAULT_TEST_VIBRO_DELAY_SECONDS = 3.0
 def now_ts() -> float:
     return time.time()
 
+RESET_CLICKS_ON_FINISH = True
+
+# Присутствие по живым WS-соединениям (см. ws_endpoint). Пинг из JS тротлится
+# под fullscreen PDF-окном, поэтому stale — только страховка от мёртвых сокетов.
+ROLE_CONNS: dict[str, set] = {r: set() for r in ROLES}
+
+def scen_log(tag, **kw):
+    """След сценария: в лог решений MidiPanel и в единый файл журнала."""
+    print(f"[scenario] {tag} {kw}", flush=True)
+    midi_service.log.appendleft({"at": now_ts(), "tag": tag, **kw})
+    scenario_log.write("scenario", tag, **kw)
 
 # ---------------------------------------------------------------------------
 # Глобальные настройки (persist)
@@ -87,6 +135,7 @@ def default_global_settings():
         "installationMode": "exhibition",
         "pendulumStepMs": 2000,
         "vibroDelaySeconds": DEFAULT_VIBRO_DELAY_SECONDS,
+        "clickGateMs": 0,
     }
 
 def load_global_settings():
@@ -102,6 +151,8 @@ def load_global_settings():
                     data["installationMode"] = raw["installationMode"]
                 if "pendulumStepMs" in raw:
                     data["pendulumStepMs"] = max(100, int(raw["pendulumStepMs"]))
+                if "clickGateMs" in raw:
+                    data["clickGateMs"] = max(0, int(raw["clickGateMs"]))
     except Exception:
         pass
     return data
@@ -114,6 +165,7 @@ def save_global_settings(data: dict):
         "installationMode": data.get("installationMode", "exhibition"),
         "pendulumStepMs": int(data.get("pendulumStepMs", 2000)),
         "vibroDelaySeconds": float(data.get("vibroDelaySeconds", DEFAULT_VIBRO_DELAY_SECONDS) or 0),
+        "clickGateMs": int(data.get("clickGateMs", 0) or 0),
     }
     GLOBAL_SETTINGS_FILE.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -134,6 +186,7 @@ def initial_state():
         "clicksByRole": {r: 0 for r in ROLES},
         "clickScenarioLockedByRole": {r: False for r in ROLES},
         "flippedCardsByRole": {r: {} for r in ROLES},
+        "flipAllSeq": 0,
         "pdfsByRole": {r: f"{r}.pdf" for r in ROLES},
         "connectedDevices": {},
         "scenario": {
@@ -148,6 +201,13 @@ def initial_state():
             "forceOpenAll": False,
             "restoreAfterForce": None,
             "waveIndex": 0,
+            "blackout": False,
+            # Выставочный режим: единственный источник истины для MIDI-раскладки.
+            "midiSettled": 0,
+            "midiRoundStarted": False,
+            "midiOpenRoles": [],
+            "midiVisible": [],
+            "midiSawLast": False,
             "waveSettled": False,
             "cycleStep": None,        # позиция внутри open/close sweep (0-based)
             "cyclePhaseRoles": [],    # активные роли прогона (канон pc1..pcN)
@@ -191,9 +251,13 @@ def bump_version():
 
 def clone_state():
     st = deepcopy(STATE)
-    # Снимок медиа едет в каждом state: клиенты pc2–pc4 узнают о новых звуках
-    # без отдельного запроса. media определяется ниже, но вызывается только в рантайме.
+    st["build"] = dict(BUILD_INFO)
     st["media"] = media.snapshot()
+    st["pdfEditor"] = pdf_editor.snapshot()
+    st["settings"] = {
+        "clickGateMs": int(GLOBAL_SETTINGS.get("clickGateMs") or 0),
+        "installationMode": GLOBAL_SETTINGS.get("installationMode"),
+    }
     return st
 
 
@@ -202,14 +266,6 @@ def clone_state():
 # ---------------------------------------------------------------------------
 def sanitize_role(role) -> str:
     return role if role in ROLES else "pc1"
-
-def visible_roles(roles_ordered):
-    """Фильтр по online: окна открываем только там, где есть живой клиент.
-    Если online вообще никого — не фильтруем (dev-режим, одна вкладка)."""
-    online = set(get_online_roles())
-    if not online:
-        return list(roles_ordered)
-    return [r for r in roles_ordered if r in online]
 
 def get_online_roles():
     """Online-роли в каноническом порядке pc1..pc4."""
@@ -312,7 +368,7 @@ def pdf_file_for_wave(n: int) -> str:
 def set_windows_sweep(open_roles_ordered, wave_n):
     s = STATE["scenario"]
     pdf = pdf_file_for_wave(wave_n)
-    open_set = set(visible_roles(open_roles_ordered))   # <-- фильтр
+    open_set = set(open_roles_ordered)
     wins = {}
     for r in ROLES:
         if r in open_set:
@@ -330,7 +386,7 @@ def set_windows_sweep(open_roles_ordered, wave_n):
 def set_windows_settled(settled_roles_ordered, wave_n):
     s = STATE["scenario"]
     tabs_all = [pdf_file_for_wave(i + 1) for i in range(wave_n)]
-    settled_set = set(visible_roles(settled_roles_ordered))   # <-- фильтр
+    settled_set = set(settled_roles_ordered)
     wins = {}
     for idx, r in enumerate(ROLES):
         if r in settled_set:
@@ -419,13 +475,17 @@ def start_cycles(source=None, *, test=False):
 
     if midi_driven(s):
         s["waveIndex"] = 0
+        s["midiSettled"] = 0
+        s["midiRoundStarted"] = False
+        s["midiOpenRoles"] = []
+        s["midiSawLast"] = False
         s["phase"] = PHASE_AWAIT_MIDI
         s["cycleStep"] = None
         clear_windows()
         _set_open_flags([])
         recompute_wave_settled()
         sync_pdf_window()
-        print("[cycles] exhibition: awaiting Reaper (note 61)", flush=True)
+        scen_log("await_midi", reason="нота 72 ушла в Reaper · окон нет · ждём open_pc1")
         return True
 
     s["waveIndex"] = 1
@@ -461,7 +521,10 @@ def cycle_tick_advance():
     active = s.get("cyclePhaseRoles") or []
     total = len(active)
     n = int(s.get("waveIndex") or 1)
-
+    # Выставка: время ведёт Reaper. Тик работает только в final_hold (вибро).
+    if midi_driven(s):
+        clear_scenario_timers()
+        return False
     if total == 0:
         return False
 
@@ -541,6 +604,10 @@ def cycle_tick_advance():
         if not s.get("vibroFired"):
             s["vibroFired"] = True
             s["vibroAt"] = now_ts()
+            s["blackout"] = True
+            clear_windows()
+            _set_open_flags([])
+            sync_pdf_window()
             print("[vibro] fire", flush=True)
             laptop = GLOBAL_SETTINGS.get("installationMode") == "laptop"
             if s.get("testMode") or laptop:
@@ -571,68 +638,144 @@ def cycle_tick_advance():
 #     active = get_online_roles() or list(ROLES)
 #     start_cycles(active, trigger, test=False)
 
-def midi_window_step(role: str, opening: bool) -> bool:
-    """Шаг круга по ноте Reaper (выставка). True — нота обработана внутри сценария.
-    False — сценарий не ведётся по MIDI; вызывающий откатится к ручному
-    open_role/close_role (legacy-поведение нот вне сценария).
+def _hidden_win():
+    return {"visible": False, "tabs": [], "activeTab": None, "token": None}
 
-    Семантика как в старом server.js: open_pcX показывает окно X с PDF текущего
-    круга, close_pcX убирает. Границы кругов выводятся из набора открытых окон:
-    пустой набор после закрытия = круг осел (накопительная раскладка), первая
-    нота открытия после этого = следующий круг. После четвёртого — final_hold.
+
+def build_midi_layout(settled_k: int, wave_n: int, visible, sweeping) -> dict:
+    """Чистая функция раскладки выставочного режима.
+
+    visible  — какие окна сейчас открыты (буквально по нотам Reaper);
+    sweeping — какие из них открыты волной текущего круга (показывают pdf{wave}).
+    Остальные видимые — осевшие: вкладки pdf1..pdf{settled}, активна своя pdf{k}.
+    Токен зависит только от содержимого этой роли — чужая нота его не меняет.
     """
-    s = STATE["scenario"]
-    if not midi_driven(s) or not s["active"] or s["forceOpenAll"]:
-        return False
-    phase = s.get("phase")
-    if phase in (PHASE_MANUAL, PHASE_FINAL_HOLD, PHASE_FORCE_OPEN_ALL):
-        return False
-
-    target = sanitize_role(role)
     total = len(ROLES)
-    n = int(s.get("waveIndex") or 0)
-
-    if phase in (PHASE_AWAIT_MIDI, PHASE_CYCLE_SETTLE):
-        # Между кругами открытых окон нет — закрывать нечего.
-        if not opening:
-            print(f"[midi-step] close_{target} in {phase}: nothing open, ignored", flush=True)
-            return True
-        n += 1
-        s["waveIndex"] = n
-        mark_wave_start(n)
-        opened = [target]
-    else:
-        opened = [r for r in ROLES if s["openRoles"].get(r)]
-        if opening:
-            if target not in opened:
-                opened = [r for r in ROLES if r in opened or r == target]
+    settled_k = max(0, min(total, int(settled_k or 0)))
+    wave_n = max(1, min(total, int(wave_n or settled_k + 1)))
+    visible = set(visible or [])
+    sweeping = set(sweeping or [])
+    settled_tabs = [pdf_file_for_wave(i + 1) for i in range(settled_k)]
+    pdf_n = pdf_file_for_wave(wave_n)
+    wins = {}
+    for idx, r in enumerate(ROLES):
+        k = idx + 1
+        if r not in visible:
+            wins[r] = _hidden_win()
+        elif r in sweeping or k > settled_k:
+            tabs = settled_tabs + [pdf_n] if k <= settled_k else [pdf_n]
+            wins[r] = {"visible": True, "tabs": tabs, "activeTab": pdf_n,
+                       "token": f"midi:{r}:wave{wave_n}:sweep"}
         else:
-            opened = [r for r in opened if r != target]
+            wins[r] = {"visible": True, "tabs": list(settled_tabs),
+                       "activeTab": pdf_file_for_wave(k),
+                       "token": f"midi:{r}:settled{settled_k}"}
+    return wins
 
-    s["popupEpoch"] += 1
-    s["cycleStep"] = None
-    clear_scenario_timers()   # выставка: таймер во время кругов молчит
 
-    if opened:
-        s["phase"] = PHASE_CYCLE_OPEN if opening else PHASE_CYCLE_CLOSE
-        set_windows_sweep(opened, n)
-        _set_open_flags(opened)
-    elif n >= total:
-        # Четвёртый круг закрыт целиком. enter_final_hold сам выложит накопительную
-        # раскладку и взведёт вибро; дальше ждём ноту 60.
-        enter_final_hold()
-        print(f"[midi-step] wave {n} closed -> final_hold", flush=True)
+def midi_window_step(role: str, opening: bool) -> bool:
+    """Буквальный исполнитель нот 61–68 в выставочном режиме.
+
+    Видимость окон — ровно то, что прислал Reaper: open показывает, close скрывает.
+    Reaper сам переоткрывает осевшие машины после закрывающей волны (61 после
+    круга 1, 61 63 после круга 2) и сам делает close_pc1 → open_pc1 перед новым
+    кругом. Бэкенд решает только, ЧТО показать, и считает круги:
+      начало круга — open ещё не осевшей машины ИЛИ close видимой осевшей;
+      конец круга  — в этом круге открывали pc4 и все окна закрыты.
+    Дубли open по видимому и close по скрытому окну ничего не меняют.
+    """
+    if not midi_driven():
+        return False
+    s = STATE["scenario"]
+    target = sanitize_role(role)
+    k = ROLES.index(target) + 1
+    total = len(ROLES)
+    act = f"{'open' if opening else 'close'}_{target}"
+
+    if s["forceOpenAll"]:
+        scen_log("midi_ignored", action=act, reason="активен force_open_all")
         return True
-    else:
-        s["phase"] = PHASE_CYCLE_SETTLE
-        settled = ROLES[:n]
-        set_windows_settled(settled, n)
-        _set_open_flags(settled)
 
+    if not s["active"] or s.get("phase") in (PHASE_IDLE, PHASE_MANUAL):
+        # Кнопка «отправить 72» запускает Reaper без 17 кликов: разрешаем один
+        # безопасный вход — первый open_pc1. Остальное вне прогона игнорируем.
+        if not (opening and target == "pc1"):
+            scen_log("midi_ignored", action=act,
+                     reason="прогона нет · автозапуск возможен только по open_pc1")
+            return True
+        if s["active"]:
+            finish_scenario({"type": "midi_autostart_cleanup"})
+        start_cycles({"type": "midi_autostart", "role": target}, test=False)
+        s = STATE["scenario"]
+        scen_log("midi_autostart", action=act,
+                 reason="Reaper уже играет · старт без повторной отправки note 72")
+    if s.get("blackout"):
+        scen_log("midi_ignored", action=act, reason="чёрный экран · ждём ноту 60")
+        return True
+
+    settled = int(s.get("midiSettled") or 0)
+    started = bool(s.get("midiRoundStarted"))
+    sweeping = set(s.get("midiOpenRoles") or [])
+    visible = set(s.get("midiVisible") or [])
+    saw_last = bool(s.get("midiSawLast"))
+
+    if not opening and target not in visible:
+        scen_log("midi_close_ignored", action=act, reason=f"{target} и так скрыт")
+        return True
+
+    before = deepcopy(STATE["pdfWindowsByRole"])
+
+    # --- граница «между кругами → круг settled+1» ---
+    if not started and settled < total:
+        starts = (opening and k > settled) or (not opening and k <= settled)
+        if starts:
+            started, sweeping, saw_last = True, set(), False
+            wave = settled + 1
+            s["waveIndex"] = wave
+            mark_wave_start(wave)
+            scen_log("wave_start", reason=f"круг {wave}/{total} · pdf{wave} · по {act}")
+    wave = settled + 1 if started else settled
+
+    # --- буквальная видимость ---
+    if opening:
+        visible.add(target)
+        if started:
+            sweeping.add(target)
+            if target == ROLES[-1]:
+                saw_last = True
+            s["phase"] = PHASE_CYCLE_OPEN
+        else:
+            s["phase"] = PHASE_CYCLE_SETTLE
+    else:
+        visible.discard(target)
+        sweeping.discard(target)
+        if started:
+            s["phase"] = PHASE_CYCLE_CLOSE
+            if saw_last and not visible:
+                settled = wave
+                started, saw_last, sweeping = False, False, set()
+                s["midiSettled"] = settled
+                s["phase"] = PHASE_CYCLE_SETTLE
+                scen_log("round_done",
+                         reason=f"круг {settled}/{total} завершён · всё закрыто · "
+                                f"ждём переоткрытия pc1..pc{settled} от Reaper")
+
+    s["midiRoundStarted"] = started
+    s["midiSawLast"] = saw_last
+    s["midiOpenRoles"] = [r for r in ROLES if r in sweeping]
+    s["midiVisible"] = [r for r in ROLES if r in visible]
+    s["cycleStep"] = None
+    clear_scenario_timers()
+    STATE["pdfWindowsByRole"] = build_midi_layout(settled, max(wave, 1), visible, sweeping)
+    _set_open_flags(s["midiVisible"])
     recompute_wave_settled()
     sync_pdf_window()
-    print(f"[midi-step] {'open' if opening else 'close'}_{target} wave={n}/{total} "
-          f"open={opened} phase={s['phase']}", flush=True)
+
+    changed = STATE["pdfWindowsByRole"] != before
+    where = f"круг {wave}/{total}" if started else f"между кругами · осело {settled}/{total}"
+    scen_log("midi_step", action=act, changed=changed,
+             reason=f"{where} · sweep={s['midiOpenRoles']} visible={s['midiVisible']} "
+                    f"· phase={s['phase']}")
     return True
 
 def advance_wave(source: dict | None = None):
@@ -800,6 +943,14 @@ def hard_reset(source: dict | None = None):
         preserve_flips=False,
     )
 
+def finish_scenario(source: dict | None = None):
+    """Единая точка штатного завершения прогона."""
+    source = source or {}
+    keep = not RESET_CLICKS_ON_FINISH
+    close_scenario(source, preserve_clicks=keep, preserve_click_locks=keep, preserve_flips=keep)
+    scen_log("scenario_finished",
+             reason=f"{source.get('type')} · клики {'сохранены' if keep else 'сброшены'}")
+
 
 # ---------------------------------------------------------------------------
 # WS hub
@@ -900,6 +1051,7 @@ async def scenario_timer_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     seed_pdfs_if_empty()
+    scenario_log.write("system", "backend_started", **BUILD_INFO)
     device_task = asyncio.create_task(device_sweeper())
     scenario_task = asyncio.create_task(scenario_timer_loop())
     try:
@@ -931,6 +1083,7 @@ app.add_middleware(
 )
 app.include_router(midi_router)
 app.include_router(pdfs_router)
+app.include_router(scenario_log.router)
 # PDF_DIR = BASE_DIR / "pdfs"
 # PDF_DIR.mkdir(exist_ok=True)
 app.mount("/pdfs", StaticFiles(directory=str(PDFS_DIR)), name="pdfs")
@@ -944,13 +1097,28 @@ async def _media_changed():
     await hub.broadcast("media_changed")
 
 
-media = MediaAdmin(DATA_DIR, pdf_dir=PDFS_DIR, on_change=_media_changed)
+media = MediaAdmin(
+    DATA_DIR,
+    pdf_dir=PDFS_DIR,
+    on_change=_media_changed,
+    template_path=bundled_pdf_template(),
+)
 app.include_router(create_router(media))   # /api/media, /api/media/import, ...
 mount_static(app, media)                    # /audio/* — настраиваемые звуки
+
+# Редактируемые слои поверх PDF + датированная история версий.
+pdf_editor = PdfEditorStore(DATA_DIR, on_change=_media_changed)
+app.include_router(create_pdf_editor_router(pdf_editor))
+mount_pdf_editor_static(app, pdf_editor)
 
 # ---------------------------------------------------------------------------
 # HTTP
 # ---------------------------------------------------------------------------
+@app.get("/api/health")
+def health():
+    return {"ok": True, "build": dict(BUILD_INFO)}
+
+
 def _addr_kind(ip: str) -> str:
     a = ipaddress.ip_address(ip)
     if a in ipaddress.ip_network("100.64.0.0/10"):
@@ -1059,23 +1227,40 @@ async def apply_action(t: str, p: dict):
         cur = STATE["flippedCardsByRole"][role].get(card_idx, False)
         STATE["flippedCardsByRole"][role][card_idx] = not cur
         STATE["clicksByRole"][role] += 1
+        clicks = STATE["clicksByRole"][role]
+        scenario_log.write("scenario", "click", role=role, n=clicks, card=card_idx,
+                           listened=bool(p.get("listened")), why=p.get("why"))
 
         s = STATE["scenario"]
         busy = s["active"] and s.get("phase") != PHASE_MANUAL
-        if (
-                not busy
-                and not STATE["clickScenarioLockedByRole"][role]
-                and STATE["clicksByRole"][role] >= CLICK_THRESHOLD
-        ):
-            start_scenario(
-                {"type": "click_threshold", "role": role,
-                 "clicks": STATE["clicksByRole"][role]},
-                "pc1",
-            )
+        locked = STATE["clickScenarioLockedByRole"][role]
+        if not busy and not locked and clicks >= CLICK_THRESHOLD:
+            start_scenario({"type": "click_threshold", "role": role, "clicks": clicks}, "pc1")
+            # Только ASCII-стрелка: консоль Windows может работать в cp1251, где
+            # символ U+2192 вызывает UnicodeEncodeError и обрывает отправку MIDI.
+            scen_log("click_threshold", reason=f"{role}: {clicks} кликов -> сценарий, нота 72 в Reaper")
             asyncio.create_task(midi_service.send_scenario_started())
+        elif clicks >= CLICK_THRESHOLD and clicks % CLICK_THRESHOLD == 0:
+            why = "сценарий уже идёт" if busy else "lock после прошлого прогона — нужен hard_reset"
+            scen_log("click_threshold_blocked", reason=f"{role}: {clicks} кликов, {why}")
         bump_version()
         await hub.broadcast("click_card")
         return {"ok": True}
+
+    if t == "flip_all_cards":
+        # Служебный переворот не является пользовательским кликом: звук,
+        # clickGate, порог 17 и запуск сценария не затрагиваются.
+        for target_role in ROLES:
+            cards = STATE["flippedCardsByRole"][target_role]
+            for card_idx in range(8):
+                key = str(card_idx)
+                cards[key] = not bool(cards.get(key, False))
+        STATE["flipAllSeq"] = int(STATE.get("flipAllSeq") or 0) + 1
+        scenario_log.write("scenario", "flip_all_cards", role=role,
+                           seq=STATE["flipAllSeq"], counted=False)
+        bump_version()
+        await hub.broadcast("flip_all_cards")
+        return {"ok": True, "counted": False}
 
     if t == "open_role_popup":
         if not (p.get("via") == "midi" and midi_window_step(role, True)):
@@ -1092,9 +1277,37 @@ async def apply_action(t: str, p: dict):
         return {"ok": True}
 
     if t == "launch":
-        advance_wave({"type": "manual_launch", "role": role, "force": bool(p.get("force"))})
+        if p.get("via") == "midi":
+            s = STATE["scenario"]
+            if s["active"]:
+                finish_scenario({"type": "midi_launch", "phase": s.get("phase"),
+                                 "wave": s.get("waveIndex")})
+            else:
+                scen_log("launch_ignored", reason="нота 60, прогона нет")
+        else:
+            advance_wave({"type": "manual_launch", "role": role, "force": bool(p.get("force"))})
         bump_version()
         await hub.broadcast("launch")
+        return {"ok": True}
+
+    if t == "final_black":
+        if p.get("via") != "midi" or not midi_driven():
+            return {"ok": True, "ignored": True}
+        s = STATE["scenario"]
+        if not s["active"]:
+            scen_log("final_black_ignored", reason="прогона нет")
+            return {"ok": True, "ignored": True}
+        s["blackout"] = True
+        s["phase"] = PHASE_BLACKOUT
+        s["midiRoundStarted"] = False
+        s["midiOpenRoles"] = []
+        clear_scenario_timers()
+        clear_windows()
+        _set_open_flags([])
+        sync_pdf_window()
+        scen_log("final_black", reason="нота 69 · чёрный экран на всех машинах")
+        bump_version()
+        await hub.broadcast("final_black")
         return {"ok": True}
 
     if t == "toggle_force_open_all":
@@ -1104,10 +1317,7 @@ async def apply_action(t: str, p: dict):
         return {"ok": True}
 
     if t == "reset_scenario":
-        close_scenario({"type": "manual_reset", "role": role})
-        bump_version()
-        await hub.broadcast("reset_scenario")
-        return {"ok": True}
+        close_scenario({"type": "manual_reset", "role": role}, preserve_click_locks=False)
 
     if t == "hard_reset":
         hard_reset({"type": "manual_hard_reset", "role": role})
@@ -1140,6 +1350,7 @@ async def apply_action(t: str, p: dict):
         s["testMode"] = False
         s["cyclePhaseRoles"] = active
         s["waveIndex"] = len(active)
+
         s["finalHoldRole"] = active[-1]
         enter_final_hold()
         bump_version()
@@ -1161,6 +1372,7 @@ class GlobalSettingsBody(BaseModel):
     installationMode: str | None = None
     pendulumStepMs: int | None = None
     vibroDelaySeconds: float | None = None
+    clickGateMs: int | None = None
 
 
 @app.post("/api/action")
@@ -1175,6 +1387,7 @@ def get_global_settings():
 
 @app.post("/api/settings/global")
 async def set_global_settings(body: GlobalSettingsBody):
+    prev_mode = GLOBAL_SETTINGS.get("installationMode")
     GLOBAL_SETTINGS["stepSeconds"] = float(body.stepSeconds)
     GLOBAL_SETTINGS["holdSeconds"] = float(body.holdSeconds)
     GLOBAL_SETTINGS["gapSeconds"] = float(body.gapSeconds)
@@ -1184,12 +1397,15 @@ async def set_global_settings(body: GlobalSettingsBody):
         GLOBAL_SETTINGS["pendulumStepMs"] = max(100, int(body.pendulumStepMs))
     if body.vibroDelaySeconds is not None:
         GLOBAL_SETTINGS["vibroDelaySeconds"] = max(0.0, float(body.vibroDelaySeconds))
+    if body.clickGateMs is not None:
+        GLOBAL_SETTINGS["clickGateMs"] = max(0, int(body.clickGateMs))
     save_global_settings(GLOBAL_SETTINGS)
     # Смена режима действует сразу: laptop глушит MIDI-вход, exhibition поднимает.
-    if GLOBAL_SETTINGS["installationMode"] == "laptop":
-        midi_service.close_input()
-    else:
-        midi_service.open_input()
+    if GLOBAL_SETTINGS["installationMode"] != prev_mode:
+        if GLOBAL_SETTINGS["installationMode"] == "laptop":
+            midi_service.close_input()
+        else:
+            midi_service.open_input()
     STATE["scenario"]["stepSeconds"] = GLOBAL_SETTINGS["stepSeconds"]
     STATE["scenario"]["holdSeconds"] = GLOBAL_SETTINGS["holdSeconds"]
     STATE["scenario"]["gapSeconds"] = GLOBAL_SETTINGS["gapSeconds"]
@@ -1198,7 +1414,7 @@ async def set_global_settings(body: GlobalSettingsBody):
     await hub.broadcast("global_settings_updated")
     return {"ok": True, "settings": dict(GLOBAL_SETTINGS)}
 
-TIMING_KEYS = ("stepSeconds", "holdSeconds", "gapSeconds", "pendulumStepMs", "vibroDelaySeconds")
+TIMING_KEYS = ("stepSeconds", "holdSeconds", "gapSeconds", "pendulumStepMs", "vibroDelaySeconds", "clickGateMs")
 
 
 @app.get("/api/settings/global/defaults")
@@ -1229,10 +1445,9 @@ async def reset_global_timings():
 async def ws_endpoint(ws: WebSocket):
     await hub.connect(ws)
     bound_role = None
+    peer = getattr(getattr(ws, "client", None), "host", None)
     try:
-        await ws.send_text(json.dumps(
-            {"type": "state", "payload": clone_state(), "reason": "initial"}
-        ))
+        await ws.send_text(json.dumps({"type": "state", "payload": clone_state(), "reason": "initial"}))
         while True:
             raw = await ws.receive_text()
             try:
@@ -1249,7 +1464,10 @@ async def ws_endpoint(ws: WebSocket):
 
             if mtype == "identify":
                 bound_role = sanitize_role(payload.get("role", "pc1"))
+                ROLE_CONNS[bound_role].add(ws)
                 touch_device(bound_role, payload.get("hostName", ""))
+                scenario_log.write("presence", "ws_identify", role=bound_role, peer=peer,
+                                   conns=len(ROLE_CONNS[bound_role]))
                 await hub.broadcast("identify")
                 continue
 
@@ -1261,5 +1479,10 @@ async def ws_endpoint(ws: WebSocket):
     finally:
         hub.disconnect(ws)
         if bound_role:
-            mark_device_offline(bound_role)
+            ROLE_CONNS[bound_role].discard(ws)
+            still = len(ROLE_CONNS[bound_role])
+            if not still:
+                mark_device_offline(bound_role)
+            scenario_log.write("presence", "ws_disconnect", role=bound_role, peer=peer,
+                               remaining=still, phase=STATE["scenario"].get("phase"))
         await hub.broadcast("disconnect")

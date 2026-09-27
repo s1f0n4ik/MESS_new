@@ -224,6 +224,40 @@ class AudioEngine {
     })
   }
 
+    /**
+   * Играет фрагмент клика и резолвится, когда он дослушан.
+   * why: ended | disabled | error | replaced | not_playing — уходит в журнал.
+   */
+  playAndWait(role, n) {
+    return new Promise((resolve) => {
+      if (!this.enabled) { resolve({ why: 'disabled' }); return }
+      const el = this._ensureEl()
+      let done = false
+      let watchdog = null
+      const finish = (why) => {
+        if (done) return
+        done = true
+        clearInterval(watchdog)
+        el.removeEventListener('ended', onEnded)
+        el.removeEventListener('error', onError)
+        resolve({ why })
+      }
+      const onEnded = () => finish('ended')
+      const onError = () => finish('error')
+      el.addEventListener('ended', onEnded)
+      el.addEventListener('error', onError)
+      this.play(role, n)
+      const mySrc = el.src
+      // Кто-то другой сменил src (playCircle и т.п.) — не ждём чужой ended.
+      // Через 1.5 с элемент так и не заиграл (autoplay/файла нет) — не вешаем гейт.
+      const startedAt = Date.now()
+      watchdog = setInterval(() => {
+        if (el.src !== mySrc) finish('replaced')
+        else if (Date.now() - startedAt > 1500 && el.paused && !el.ended) finish('not_playing')
+      }, 250)
+    })
+  }
+
   // Финальная вибро-дорожка: настраиваемая, иначе встроенная final.wav.
   playVibroFinal() {
     if (!this.vibroEnabled) {

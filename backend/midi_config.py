@@ -16,21 +16,41 @@ MIDI_ACTIONS = [
     "launch", "toggle_force_open_all", "reset_scenario", "hard_reset",
     "minimize_all_windows",
     "open_pc1", "open_pc2", "open_pc3", "open_pc4",
-    "close_pc1", "close_pc2", "close_pc3", "close_pc4",
+    "close_pc1", "close_pc2", "close_pc3", "close_pc4", "final_black"
 ]
 # нота 72 по 17 кликам
 LEGACY_MAPPING = [
     {"channel": 2, "note": 60, "action": "launch"},
     {"channel": 2, "note": 61, "action": "open_pc1"},
-    {"channel": 2, "note": 62, "action": "open_pc2"},
-    {"channel": 2, "note": 63, "action": "close_pc1"},
-    {"channel": 2, "note": 64, "action": "open_pc3"},
-    {"channel": 2, "note": 65, "action": "close_pc2"},
-    {"channel": 2, "note": 66, "action": "open_pc4"},
-    {"channel": 2, "note": 67, "action": "close_pc3"},
+    {"channel": 2, "note": 62, "action": "close_pc1"},
+    {"channel": 2, "note": 63, "action": "open_pc2"},
+    {"channel": 2, "note": 64, "action": "close_pc2"},
+    {"channel": 2, "note": 65, "action": "open_pc3"},
+    {"channel": 2, "note": 66, "action": "close_pc3"},
+    {"channel": 2, "note": 67, "action": "open_pc4"},
     {"channel": 2, "note": 68, "action": "close_pc4"},
-    {"channel": 2, "note": 69, "action": "minimize_all_windows"},
+    {"channel": 2, "note": 69, "action": "final_black"},
 ]
+
+# Реальный Reaper использует попарную схему open/close; старая сборка отличалась
+# только назначением 69 на сворачивание. Узнаём точную сигнатуру, чтобы заменить
+# 69 на финальный blackout, не перетирая произвольный пользовательский маппинг.
+OBSOLETE_MAPPING_SIGNATURE = {
+    60: "launch", 61: "open_pc1", 62: "close_pc1", 63: "open_pc2",
+    64: "close_pc2", 65: "open_pc3", 66: "close_pc3", 67: "open_pc4",
+    68: "close_pc4", 69: "minimize_all_windows",
+}
+
+
+def migrate_obsolete_mapping(mapping):
+    signature = {
+        int(item.get("note")): item.get("action")
+        for item in (mapping or [])
+        if item.get("channel") == LEGACY_CHANNEL and item.get("note") is not None
+    }
+    if signature == OBSOLETE_MAPPING_SIGNATURE:
+        return [dict(item) for item in LEGACY_MAPPING], True
+    return mapping, False
 
 
 def default_midi_settings():
@@ -59,7 +79,13 @@ def load_midi_settings():
                 if "filterChannel" in raw:
                     data["filterChannel"] = int(raw["filterChannel"])
                 if isinstance(raw.get("mapping"), list) and raw["mapping"]:
-                    data["mapping"] = [dict(x) for x in raw["mapping"]]
+                    data["mapping"] = [dict(x) for x in raw["mapping"]
+                                       if x.get("action") in MIDI_ACTIONS]
+                    data["mapping"], migrated = migrate_obsolete_mapping(data["mapping"])
+                    if migrated:
+                        MIDI_SETTINGS_PATH.write_text(
+                            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+                        )
     except Exception:
         pass
     return data
@@ -90,7 +116,7 @@ def action_to_spec(action: str):
         "toggle_force_open_all": "toggle_force_open_all",
         "reset_scenario": "reset_scenario",
         "hard_reset": "hard_reset",
-        "minimize_all_windows": "minimize_all_windows",
+        "final_black": "final_black",
     }
     if action in simple:
         return {"type": simple[action], "payload": {}}

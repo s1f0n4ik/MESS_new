@@ -13,6 +13,7 @@ export default defineConfig({
     proxy: {
       '/api':  { target: API_TARGET, changeOrigin: true },
       '/pdfs': { target: API_TARGET, changeOrigin: true },
+      '/pdf-editor-assets': { target: API_TARGET, changeOrigin: true },
       '/ws':   { target: API_TARGET, changeOrigin: true, ws: true },
     },
   },

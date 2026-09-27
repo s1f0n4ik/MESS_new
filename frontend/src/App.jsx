@@ -15,9 +15,24 @@ import { serverOrigin } from './net/origin'
 import { usePdfWindowHotkeys, PdfMinimizeButton, togglePdfWindows } from './pdf/pdfWindowControls'
 import { StandardTimingButton } from './settings/StandardTimingButton'
 import { CoordinatorAddressPanel } from './settings/CoordinatorAddressPanel'
+import { LogPanel } from './log/LogPanel'
+import { reportClient } from './log/clientLog'
+import { PdfLibraryEditor } from './pdf/PdfLibraryEditor'
 
 const role = getRole()
 const isController = role === 'pc1'
+
+function Blackout({ active }) {
+  if (!active) return null
+  return (
+    <div
+      aria-label="Финальный чёрный экран"
+      // Выше сцены/PDF, но ниже служебного меню (z=100): после финала
+      // оператор по-прежнему может нажать M и запустить следующий прогон.
+      style={{ position: 'fixed', inset: 0, background: '#000', zIndex: 90 }}
+    />
+  )
+}
 
 
 function agoLabel(lastSeenAt) {
@@ -34,13 +49,30 @@ function etaLabel(dwellNextAt) {
   return `${left.toFixed(1)}s`
 }
 
+function isTypingTarget(target) {
+  return Boolean(target && (
+    /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable
+  ))
+}
+
+function flipAllByKeyboard(serverHost, currentRole, ws = null) {
+  const body = { type: 'flip_all_cards', payload: { role: currentRole, via: 'keyboard' } }
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'action', payload: body }))
+    return
+  }
+  fetch(apiUrl('/api/action', serverHost), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  }).catch(() => {})
+}
+
 function MainApp() {
   const [state, setState] = useState(null)
   const [connected, setConnected] = useState(false)
   const [, forceTick] = useState(0) // чтобы «Ns назад» и ETA обновлялись
   const wsRef = useRef(null)
-  const prevClicksRef = useRef(0)
-
+  // const prevClicksRef = useRef(0)
+  //
   const initialLocalSettings = loadLocalSettings()
   const [localSettings, setLocalSettings] = useState({
     serverHost: initialLocalSettings.serverHost || '',
@@ -60,13 +92,14 @@ function MainApp() {
     stepSeconds: '',
     holdSeconds: '',
     gapSeconds: '',
+    clickGateMs: '',
   })
   const [settingsSaving, setSettingsSaving] = useState(false)
 
   // ==== Overlay-меню: только при ?admin=1, тоггл по M / Ь, закрытие по Esc ====
   const adminAllowed = new URLSearchParams(window.location.search).has('admin')
   const [menuOpen, setMenuOpen] = useState(false)
-
+  const [logOpen, setLogOpen] = useState(false)
 
   useEffect(() => {
     if (!adminAllowed) return
@@ -78,6 +111,17 @@ function MainApp() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [adminAllowed])
+
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return
+      if (e.code === 'KeyL') setLogOpen((v) => !v)
+      if (e.key === 'Escape') setLogOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
     // P — свернуть/вернуть PDF-окна этой машины (только Tauri, внутри хука проверка).
   usePdfWindowHotkeys(false)
   // тик 2 раза в секунду — освежаем relative-время в Devices и ETA таймера
@@ -100,15 +144,33 @@ function MainApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Звук клика: играем при приросте счётчика МОЕЙ роли.
-  useEffect(() => {
-    const next = Number(state?.clicksByRole?.[role] || 0)
-    const prev = prevClicksRef.current
-    if (next > prev) {
-      audioEngine.play(role, next) // клампится до 16 внутри движка
+    // Клик по открытке: карта переворачивается сразу (это внутри CardScene),
+  // фрагмент играет сразу, а ЗАСЧИТЫВАЕТСЯ клик только когда фрагмент дослушан
+  // (и не раньше settings.clickGateMs, если он задан). Пока слушаем — новые
+  // клики не считаются и фрагмент не перебивают.
+  const listeningRef = useRef(null)
+  const onCardClick = async (cardIndex) => {
+    const clicks = Number(state?.clicksByRole?.[role] || 0)
+    if (listeningRef.current) {
+      console.log('[click] не засчитан: ещё слушаем фрагмент', listeningRef.current)
+      return
     }
-    prevClicksRef.current = next
-  }, [state?.clicksByRole])
+    const n = clicks + 1
+    const startedAt = Date.now()
+    listeningRef.current = n
+    try {
+      const res = await audioEngine.playAndWait(role, n)
+      const gateMs = Number(state?.settings?.clickGateMs || 0)
+      const rest = gateMs - (Date.now() - startedAt)
+      if (rest > 0) await new Promise((r) => setTimeout(r, rest))
+      sendAction('click_card', {
+        role, cardIndex, listened: true, why: res.why,
+        listenedMs: Date.now() - startedAt,
+      })
+    } finally {
+      listeningRef.current = null
+    }
+  }
 
     // Звук начала волны: играем при приросте waveSoundSeq.
   // Первое пришедшее состояние только запоминаем — при заходе на страницу
@@ -132,24 +194,16 @@ function MainApp() {
   // Таймер локальный — вибро-устройство выбирается на этой машине, сервер
   // не знает, у кого оно подключено. Уход из final_hold раньше срока
   // (медиатор сбросил, нота закрыла) отменяет таймер.
-  const vibroTimerRef = useRef(null)
-  const scenarioPhase = state?.scenario?.phase
+    // Вибро-финал: момент задаёт координатор (scenario.vibroFired), устройство — эта машина.
+  const vibroPlayedRef = useRef(false)
+  const vibroFired = Boolean(state?.scenario?.vibroFired)
   useEffect(() => {
-    if (scenarioPhase === 'final_hold') {
-      if (vibroTimerRef.current) return
-      const ms = Math.max(0, Number(localSettings.vibroDelaySeconds ?? 120)) * 1000
-      console.log('[vibro] final_hold → вибро через', ms / 1000, 'с')
-      vibroTimerRef.current = setTimeout(() => {
-        vibroTimerRef.current = null
-        audioEngine.playVibroFinal()
-      }, ms)
-    } else if (vibroTimerRef.current) {
-      clearTimeout(vibroTimerRef.current)
-      vibroTimerRef.current = null
-      console.log('[vibro] final_hold покинут до срока — таймер отменён')
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scenarioPhase])
+    if (!vibroFired) { vibroPlayedRef.current = false; return }
+    if (vibroPlayedRef.current) return
+    vibroPlayedRef.current = true
+    console.log('[vibro] fire (по флагу координатора)')
+    audioEngine.playVibroFinal()
+  }, [vibroFired])
 
     // Настраиваемые дорожки приходят в state.media — движок всегда знает актуальные
   // файлы, в том числе на pc2–pc4, где меню не открывают.
@@ -166,6 +220,7 @@ function MainApp() {
         stepSeconds: String(data?.stepSeconds ?? ''),
         holdSeconds: String(data?.holdSeconds ?? ''),
         gapSeconds: String(data?.gapSeconds ?? ''),
+        clickGateMs: String(data?.clickGateMs ?? 0),
       })
     } catch {}
   }
@@ -174,6 +229,11 @@ function MainApp() {
     loadGlobalSettings()
   }, [localSettings.serverHost])
 
+  useEffect(() => {
+    const onVis = () => reportClient(localSettings.serverHost, role, 'visibility', { hidden: document.hidden })
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [localSettings.serverHost])
   useEffect(() => {
     let stopped = false
     let pingTimer = null
@@ -248,6 +308,17 @@ function MainApp() {
     }
   }
 
+  // F (при любой раскладке) — массовый переворот без кликов и звука.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.code !== 'KeyF' || e.repeat || e.ctrlKey || e.altKey || e.metaKey || isTypingTarget(e.target)) return
+      e.preventDefault()
+      flipAllByKeyboard(localSettings.serverHost, role, wsRef.current)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [localSettings.serverHost])
+
   const saveGlobalSettings = async () => {
     setSettingsSaving(true)
     try {
@@ -258,6 +329,7 @@ function MainApp() {
           stepSeconds: Number(globalSettings.stepSeconds || 0),
           holdSeconds: Number(globalSettings.holdSeconds || 0),
           gapSeconds: Number(globalSettings.gapSeconds || 0),
+          clickGateMs: Number(globalSettings.clickGateMs || 0),
         }),
       })
     } finally {
@@ -285,19 +357,24 @@ function MainApp() {
   const driver = getWindowDriver()
   const myWin = state?.pdfWindowsByRole?.[role]
   const pdfVisible = Boolean(myWin?.visible)
-  const pdfToken = myWin?.token || null
 
+  // Окно создаётся/убирается ТОЛЬКО по visible своей роли. Токен постоянный (role):
+  // вкладки и активный текст PDF-окно читает само по WS, пересоздавать его не нужно.
   useEffect(() => {
-    if (driver.kind !== 'tauri') return
+    if (driver.kind !== 'tauri' || !state) return
     if (pdfVisible) {
       const q = new URLSearchParams({ view: 'pdf', role })
       if (localSettings.serverHost) q.set('host', localSettings.serverHost)
-      driver.open(pdfToken, `/?${q.toString()}`, { role })
+      driver.open(role, `/?${q.toString()}`, { role })
+      reportClient(localSettings.serverHost, role, 'window_open', {
+        tabs: myWin?.tabs, active: myWin?.activeTab, phase: state?.scenario?.phase,
+      })
     } else {
       driver.close()
+      reportClient(localSettings.serverHost, role, 'window_close', { phase: state?.scenario?.phase })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pdfVisible, pdfToken, localSettings.serverHost])
+  }, [pdfVisible, localSettings.serverHost])
 
   // Закрываем окно при выходе, чтобы не осталось сиротой.
   useEffect(() => {
@@ -312,7 +389,9 @@ function MainApp() {
       {/* ===== Сцена всегда на фоне (zIndex: 0) ===== */}
       <div style={{ position: 'fixed', inset: 0, zIndex: 0 }}>
         <CardScene
-          onCardClick={(cardIndex) => sendAction('click_card', { role, cardIndex })}
+          onCardClick={onCardClick}
+          flipAllSeq={state?.flipAllSeq || 0}
+          serverFlipped={state?.flippedCardsByRole?.[role]}
         />
       </div>
 
@@ -397,11 +476,25 @@ function MainApp() {
             Звук кликов
           </label>
 
+          <button
+            onClick={() => { setMenuOpen(false); setLibraryEditorOpen(true) }}
+            style={{ margin: '4px 0 10px', padding: '8px 12px', fontWeight: 700, background: '#2d6', color: '#000' }}
+          >
+            ✎ Редактировать все четыре документа
+          </button>
+
           {/* ================= CONTROLLER-ONLY (pc1) ================= */}
           {isController && (
             <>
               <div>stateVersion: {state?.stateVersion ?? '...'}</div>
-              <div>Clicks ({role}): {state?.clicksByRole?.[role] ?? 0}</div>
+              <div>
+                Clicks:{' '}
+                {['pc1', 'pc2', 'pc3', 'pc4'].map((counterRole) => (
+                  <span key={counterRole} style={{ marginRight: 10 }}>
+                    {counterRole} <b>{state?.clicksByRole?.[counterRole] ?? 0}/17</b>
+                  </span>
+                ))}
+              </div>
               <div>
                 Scenario: {sc.active ? 'active' : 'idle'} · currentRole:{' '}
                 {sc.currentRole || '-'}
@@ -424,6 +517,13 @@ function MainApp() {
               </div>
 
               <div className="toolbar">
+                <button
+                  onClick={() => sendAction('flip_all_cards')}
+                  title="Клавиша F. Переворачивает восемь открыток на всех четырёх ПК; клики и звук не учитываются"
+                  style={{ fontWeight: 700, background: '#f0b429', color: '#111' }}
+                >
+                  ↻ Перевернуть все открытки (без кликов)
+                </button>
                 <button onClick={openPdfManual}>Open PDF (local)</button>
                 <button onClick={closePdfManual}>Close PDF (local)</button>
                 {window.__TAURI__ && (
@@ -468,6 +568,9 @@ function MainApp() {
                 <br />
                 {'next step in: '}<b>{etaLabel(sc.dwellNextAt)}</b>
                 {' · cycleRoles: '}{(sc.cyclePhaseRoles || []).join(',') || '—'}
+                <br />
+                {'backend: '}<b>{state?.build?.name || 'unknown'}</b>
+                {' · sha: '}{state?.build?.sha256 || '—'}
                 <br />
                 {'testMode: '}{String(sc.testMode ?? false)}
                 {' · testRoles: '}{(sc.testRoles || []).join(',') || '—'}
@@ -578,8 +681,22 @@ function MainApp() {
                       style={{ width: 90 }}
                     />
                   </label>
+                  <label style={{ fontSize: 13 }}>
+                    clickGateMs{' '}
+                    <input
+                      type="number"
+                      step="100"
+                      min="0"
+                      value={globalSettings.clickGateMs}
+                      onChange={(e) =>
+                        setGlobalSettings((s) => ({ ...s, clickGateMs: e.target.value }))
+                      }
+                      style={{ width: 90 }}
+                      title="0 — клик засчитывается по концу фрагмента; N — не раньше N мс после клика"
+                    />
+                  </label>
                   <button onClick={saveGlobalSettings} disabled={settingsSaving}>
-                    {settingsSaving ? 'Saving...' : 'Save settings'}
+                    {settingsSaving ? 'Сохраняем...' : 'Настройки сохранены'}
                   </button>
                   <button onClick={loadGlobalSettings}>Reload settings</button>
                   <StandardTimingButton
@@ -589,6 +706,7 @@ function MainApp() {
                         stepSeconds: String(s?.stepSeconds ?? ''),
                         holdSeconds: String(s?.holdSeconds ?? ''),
                         gapSeconds: String(s?.gapSeconds ?? ''),
+                        clickGateMs: String(s?.clickGateMs ?? 0),
                       })
                     }
                     style={{ marginLeft: 8 }}
@@ -608,10 +726,18 @@ function MainApp() {
           )}
 
           <div style={{ marginTop: 16, fontSize: 12, opacity: 0.6 }}>
-            Меню: M — открыть/закрыть · Esc — закрыть
+            Меню: M — открыть/закрыть · F — перевернуть все открытки · Esc — закрыть
           </div>
         </div>
       )}
+      {logOpen && (
+        <LogPanel serverHost={localSettings.serverHost} role={role} onClose={() => setLogOpen(false)} />
+      )}
+      {libraryEditorOpen && (
+        <PdfLibraryEditor serverHost={localSettings.serverHost} state={state} updatedBy={role}
+          onClose={() => setLibraryEditorOpen(false)} />
+      )}
+      <Blackout active={Boolean(state?.scenario?.blackout)} />
     </div>
   )
 }
@@ -624,6 +750,28 @@ function PdfViewApp() {
   const myRole = params.get('role') || 'pc1'
   const serverHost = params.get('host') || ''
   const [state, setState] = useState(null)
+  const [logOpen, setLogOpen] = useState(false)
+  const [libraryEditorOpen, setLibraryEditorOpen] = useState(false)
+
+  // PDF-окно обычно держит фокус, поэтому горячая клавиша дублируется здесь.
+  useEffect(() => {
+    const onFlip = (e) => {
+      if (e.code !== 'KeyF' || e.repeat || e.ctrlKey || e.altKey || e.metaKey || isTypingTarget(e.target)) return
+      e.preventDefault()
+      flipAllByKeyboard(serverHost, myRole)
+    }
+    window.addEventListener('keydown', onFlip)
+    return () => window.removeEventListener('keydown', onFlip)
+  }, [serverHost, myRole])
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.code === 'KeyL') setLogOpen((v) => !v)
+      if (e.key === 'Escape') setLogOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   useEffect(() => {
     let stopped = false
@@ -661,6 +809,10 @@ function PdfViewApp() {
     <div style={{ position: 'fixed', inset: 0, background: '#111', overflow: 'hidden' }}>
       <PdfWindowLayer state={state} myRole={myRole} serverHost={serverHost} />
       <PdfMinimizeButton />
+      {logOpen && (
+        <LogPanel serverHost={serverHost} role={myRole} onClose={() => setLogOpen(false)} />
+      )}
+      <Blackout active={Boolean(state?.scenario?.blackout)} />
     </div>
   )
 }

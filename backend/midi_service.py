@@ -12,7 +12,7 @@
 import asyncio
 import time
 from collections import deque
-
+import scenario_log
 import mido
 
 from midi_config import (
@@ -47,6 +47,7 @@ def _pick_port(names, hint):
             if low in n.lower():
                 return n
     return names[0]
+
 
 
 class MidiService:
@@ -85,6 +86,7 @@ class MidiService:
         entry = {"at": time.time(), "tag": tag, **kw}
         self.log.appendleft(entry)
         print(f"[midi] {tag} {kw}", flush=True)
+        scenario_log.write("midi", tag, **kw)
 
     def clear_log(self):
         self.log.clear()
@@ -256,6 +258,10 @@ class MidiService:
             + (" (monitor only)" if e.get("monitor") else ""),
             flush=True,
         )
+        scenario_log.write(
+            "midi-in", e["type"], port=e.get("port"), channel=e.get("channel"),
+            note=e.get("note"), velocity=e.get("velocity"), monitor=bool(e.get("monitor")),
+        )
         if e.get("monitor"):
             return  # чужой вход: показываем, не исполняем — иначе дубли
         if e["type"] != "note_on" or not e.get("velocity"):
@@ -302,14 +308,9 @@ class MidiService:
             return
 
         payload = dict(spec.get("payload") or {})
-        payload["via"] = "midi"  # main.py отличает ноту Reaper от кнопки в админке
-        if spec["type"] == "launch":
-            if "role" not in payload:
-                payload["role"] = self.final_hold_role() or "pc4"
-            if not self.in_final_hold():
-                self._log("launch_ignored", channel=ch, note=note, port=port,
-                          reason=f"not in final_hold ({self.scenario_brief()})")
-                return
+        payload["via"] = "midi"
+        if spec["type"] == "launch" and "role" not in payload:
+            payload["role"] = self.final_hold_role() or "pc4"
 
         self._log("dispatch", channel=ch, note=note, port=port,
                   action=hit["action"], type=spec["type"])
@@ -333,7 +334,6 @@ class MidiService:
     # ---------- отправка ----------
     async def send_test_note(self, note=None, velocity=None, channel=None,
                              duration_ms=None, tag="output_test_sent"):
-        self._log(tag, note=note, channel=channel)
         out = self._out_port or self.open_output()
         if not out:
             return False
@@ -345,7 +345,7 @@ class MidiService:
             out.send(mido.Message("note_on", channel=channel - 1, note=note, velocity=velocity))
             await asyncio.sleep(duration)
             out.send(mido.Message("note_off", channel=channel - 1, note=note, velocity=0))
-            self._log("output_test_sent", note=note, channel=channel)
+            self._log(tag, note=note, channel=channel)
             return True
         except Exception as e:
             self._log("output_test_failed", error=str(e))

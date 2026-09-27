@@ -32,7 +32,7 @@ echo target triple: %TRIPLE%
 
 set DEST=..\frontend\src-tauri\binaries
 if not exist "%DEST%" mkdir "%DEST%"
-copy /y dist\postcards-backend.exe "%DEST%\postcards-backend-%TRIPLE%.exe" || goto :fail
+powershell -NoProfile -Command "Copy-Item -LiteralPath 'dist\postcards-backend.exe' -Destination '%DEST%\postcards-backend-%TRIPLE%.exe' -Force" || goto :fail
 
 echo.
 echo OK: %DEST%\postcards-backend-%TRIPLE%.exe

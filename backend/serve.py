@@ -30,6 +30,8 @@ def main() -> None:
         http="h11",
         lifespan="on",
         access_log=True,
+        ws_ping_interval=10,
+        ws_ping_timeout=20,
     )
 
 

@@ -117,6 +117,15 @@ export function MediaPanel({ serverHost, media: mediaFromState }) {
   const reset = (item) =>
     send(item, apiUrl(`/api/media/${item.kind}/${item.slot}`, serverHost), { method: 'DELETE' })
 
+  const installTemplate = async () => {
+    if (!window.confirm('Установить шаблон 2×2 во все четыре документа? Текущие PDF будут сохранены в резервной папке.')) return
+    await send(
+      { slot: 'template', label: 'Шаблон 2×2' },
+      apiUrl('/api/media/template', serverHost),
+      { method: 'POST' },
+    )
+  }
+
   const preview = (item) => {
     if (item.slot === 'vibro_final') audioEngine.playVibroFinal()
     else audioEngine.playCircle(Number(item.slot.replace('circle', '')))
@@ -166,6 +175,11 @@ export function MediaPanel({ serverHost, media: mediaFromState }) {
         Тексты — {media.dirs?.pdfs}
       </div>
       <div style={{ display: 'grid', gap: 4, marginBottom: 12 }}>{PDF_ITEMS.map(row)}</div>
+      {media.template?.available && (
+        <button onClick={installTemplate} disabled={busy === 'template'} style={{ marginBottom: 12, fontWeight: 700 }}>
+          {busy === 'template' ? 'Устанавливаем…' : 'Установить шаблон 2×2 × 14 во все четыре текста'}
+        </button>
+      )}
 
       <div style={{ fontSize: 13, opacity: 0.8, marginBottom: 4 }}>
         Звуки открытий — {media.dirs?.audio}

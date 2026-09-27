@@ -8,7 +8,86 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
 // Ограничиваем DPR: на 4K rendering в 3x съедает память без видимой пользы.
 const MAX_DPR = 2
 
-function PdfPage({ page, containerWidth }) {
+function EditableItem({ item, selected, editMode, assetOrigin, onSelect, onChange }) {
+  const dragRef = useRef(null)
+
+  const beginPointer = (event, mode) => {
+    if (!editMode) return
+    event.preventDefault()
+    event.stopPropagation()
+    onSelect(item.id)
+    dragRef.current = {
+      mode, startX: event.clientX, startY: event.clientY,
+      x: item.x, y: item.y, w: item.w, h: item.h,
+      pageW: event.currentTarget.parentElement.clientWidth,
+      pageH: event.currentTarget.parentElement.clientHeight,
+    }
+    const move = (e) => {
+      const d = dragRef.current
+      if (!d) return
+      const dx = (e.clientX - d.startX) / d.pageW
+      const dy = (e.clientY - d.startY) / d.pageH
+      if (d.mode === 'resize') {
+        onChange(item.id, { w: Math.max(0.02, Math.min(1 - d.x, d.w + dx)), h: Math.max(0.02, Math.min(1 - d.y, d.h + dy)) })
+      } else {
+        onChange(item.id, { x: Math.max(0, Math.min(1 - d.w, d.x + dx)), y: Math.max(0, Math.min(1 - d.h, d.y + dy)) })
+      }
+    }
+    const up = () => {
+      dragRef.current = null
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+
+  const common = {
+    position: 'absolute', left: `${item.x * 100}%`, top: `${item.y * 100}%`,
+    width: `${item.w * 100}%`, height: `${item.h * 100}%`, boxSizing: 'border-box',
+    outline: selected && editMode ? '3px solid #16a3ff' : 'none',
+    cursor: editMode ? 'move' : 'default', overflow: 'hidden',
+    pointerEvents: editMode ? 'auto' : 'none',
+  }
+
+  return (
+    <div style={common} onPointerDown={(e) => beginPointer(e, 'move')} onClick={(e) => { e.stopPropagation(); onSelect(item.id) }}>
+      {item.type === 'text' && (editMode && selected ? (
+        <textarea
+          value={item.text || ''}
+          onPointerDown={(e) => e.stopPropagation()}
+          onChange={(e) => onChange(item.id, { text: e.target.value })}
+          style={{ width: '100%', height: '100%', resize: 'none', boxSizing: 'border-box', border: 0,
+            padding: 4, fontSize: item.fontSize || 28, color: item.color || '#111',
+            background: item.background || 'transparent', textAlign: item.align || 'left',
+            fontWeight: item.bold ? 700 : 400, fontFamily: 'Arial, sans-serif' }}
+        />
+      ) : (
+        <div style={{ width: '100%', height: '100%', padding: 4, boxSizing: 'border-box', whiteSpace: 'pre-wrap',
+          overflow: 'hidden', fontSize: item.fontSize || 28, color: item.color || '#111',
+          background: item.background || 'transparent', textAlign: item.align || 'left',
+          fontWeight: item.bold ? 700 : 400, fontFamily: 'Arial, sans-serif' }}>{item.text}</div>
+      ))}
+      {item.type === 'image' && (
+        <img src={`${assetOrigin}${item.src}`} alt="" draggable={false}
+          style={{ width: '100%', height: '100%', display: 'block', objectFit: item.fit || 'cover', pointerEvents: 'none' }} />
+      )}
+      {item.type === 'cover' && <div style={{ width: '100%', height: '100%', background: item.color || '#fff' }} />}
+      {selected && editMode && (
+        <>
+          <div onPointerDown={(e) => beginPointer(e, 'move')} title="Переместить"
+            style={{ position: 'absolute', left: 0, top: 0, width: 24, height: 24,
+              background: '#16a3ff', cursor: 'move', border: '2px solid white', boxSizing: 'border-box' }} />
+          <div onPointerDown={(e) => beginPointer(e, 'resize')} title="Изменить размер"
+            style={{ position: 'absolute', right: 0, bottom: 0, width: 20, height: 20,
+              background: '#16a3ff', cursor: 'nwse-resize', border: '2px solid white', boxSizing: 'border-box' }} />
+        </>
+      )}
+    </div>
+  )
+}
+
+function PdfPage({ page, containerWidth, editor }) {
   const canvasRef = useRef(null)
   const wrapRef = useRef(null)
   const taskRef = useRef(null)
@@ -75,9 +154,10 @@ function PdfPage({ page, containerWidth }) {
     <div
       ref={wrapRef}
       style={{
+        position: 'relative',
         width: cssW,
         height: cssH,
-        margin: '0 auto 12px',
+        margin: '0 auto',
         background: '#fff',
         // Плейсхолдер держит высоту до рендера — скролл не дёргается.
         boxShadow: rendered ? 'none' : 'inset 0 0 0 1px #333',
@@ -87,11 +167,19 @@ function PdfPage({ page, containerWidth }) {
         ref={canvasRef}
         style={{ display: 'block', width: '100%', height: '100%' }}
       />
+      <div style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}
+        onClick={() => editor?.onSelect?.(null)}>
+        {(editor?.items || []).map((item) => (
+          <EditableItem key={item.id} item={item} editMode={editor.editMode}
+            selected={editor.selectedId === item.id} assetOrigin={editor.assetOrigin || ''}
+            onSelect={editor.onSelect} onChange={editor.onChange} />
+        ))}
+      </div>
     </div>
   )
 }
 
-export function PdfDocument({ url, resetKey }) {
+export function PdfDocument({ url, resetKey, editor = null }) {
   const scrollRef = useRef(null)
   const [pages, setPages] = useState([])
   const [width, setWidth] = useState(0)
@@ -160,8 +248,8 @@ export function PdfDocument({ url, resetKey }) {
         height: '100%',
         overflowY: 'auto',
         overflowX: 'hidden',
-        background: '#1a1a1a',
-        padding: '12px 0',
+        background: '#fff',
+        padding: 0,
       }}
     >
       {error ? (
@@ -170,7 +258,11 @@ export function PdfDocument({ url, resetKey }) {
         </div>
       ) : (
         pages.map((p) => (
-          <PdfPage key={p.pageNumber} page={p} containerWidth={width} />
+          <PdfPage key={p.pageNumber} page={p} containerWidth={width}
+            editor={editor ? { ...editor, items: editor.pages?.[String(p.pageNumber)] || [], pageNumber: p.pageNumber,
+              selectedId: Number(editor.selected?.page) === p.pageNumber ? editor.selected.id : null,
+              onSelect: (id) => editor.onSelect(p.pageNumber, id),
+              onChange: (id, patch) => editor.onChange(p.pageNumber, id, patch) } : null} />
         ))
       )}
     </div>

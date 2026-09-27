@@ -1,7 +1,7 @@
 
 
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 // ЭТАЛОННЫЙ ХОЛСТ. Вся сцена рисуется в этих координатах,
 // затем целиком масштабируется под реальный экран через transform: scale().
@@ -76,11 +76,23 @@ function useAntiVandal() {
   }, [])
 }
 
-export function CardScene({ onCardClick }) {
+export function CardScene({ onCardClick, flipAllSeq = 0, serverFlipped = null }) {
   const scale = useSceneScale()
   //useAntiVandal()
 
   const [flipped, setFlipped] = useState({})
+  const appliedFlipAllSeq = useRef(null)
+
+  // Массовый переворот приходит отдельной серверной командой. Он только
+  // синхронизирует стороны карточек и никогда не вызывает onCardClick.
+  useEffect(() => {
+    if (!serverFlipped) return
+    if (appliedFlipAllSeq.current === flipAllSeq) return
+    appliedFlipAllSeq.current = flipAllSeq
+    const next = {}
+    CARDS.forEach((n, index) => { next[n] = Boolean(serverFlipped[String(index)]) })
+    setFlipped(next)
+  }, [flipAllSeq, serverFlipped])
 
   const handleClick = (cardNumber) => {
     setFlipped((prev) => ({ ...prev, [cardNumber]: !prev[cardNumber] }))

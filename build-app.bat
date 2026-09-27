@@ -2,13 +2,13 @@
 setlocal
 cd /d "%~dp0frontend"
 
-echo [1/4] checking sidecar
+echo [1/4] checking backend embedded into app
 for /f "tokens=2" %%i in ('rustc -Vv ^| findstr /b host:') do set TRIPLE=%%i
 if "%TRIPLE%"=="" (echo cannot detect rust target triple & goto :fail)
 echo target triple: %TRIPLE%
 if not exist "src-tauri\binaries\postcards-backend-%TRIPLE%.exe" (
     echo MISSING: src-tauri\binaries\postcards-backend-%TRIPLE%.exe
-    echo Run build-backend.bat first.
+    echo Run build-backend.bat first. This file is embedded into tauri-app.exe.
     goto :fail
 )
 

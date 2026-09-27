@@ -26,7 +26,9 @@ a = Analysis(
     ["serve.py"],
     pathex=["."],
     binaries=[],
-    datas=[],
+    datas=[
+        ("../frontend/src-tauri/pdfs-default/Postcards_2x2_template_14_blocks.pdf", "pdfs-default"),
+    ],
     hiddenimports=hidden,
     hookspath=[],
     runtime_hooks=[],
