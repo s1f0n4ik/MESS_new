@@ -3,6 +3,11 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    // `/assets` is reserved for mediator-uploaded files served by the API.
+    // Keep compiled JS/CSS on a distinct URL so Nginx does not proxy them.
+    assetsDir: 'static',
+  },
   server: {
     port: 5173,
     proxy: {
