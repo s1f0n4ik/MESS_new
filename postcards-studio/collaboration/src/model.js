@@ -1,6 +1,9 @@
 import * as Y from 'yjs'
 
-const primitiveKeys = ['id', 'type', 'x', 'y', 'w', 'h', 'fontSize', 'color', 'background', 'align', 'bold', 'src', 'fit']
+const primitiveKeys = [
+  'id', 'type', 'x', 'y', 'w', 'h', 'fontSize', 'fontFamily', 'color', 'background',
+  'align', 'bold', 'italic', 'src', 'fit', 'shape', 'fill', 'stroke', 'strokeWidth', 'strokeStyle',
+]
 
 export function elementFromJson(value) {
   const element = new Y.Map()

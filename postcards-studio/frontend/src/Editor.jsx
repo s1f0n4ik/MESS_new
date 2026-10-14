@@ -5,6 +5,7 @@ import PdfPages from './PdfPages'
 import UserDialog from './UserDialog'
 
 const newId = () => `e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+const FONT_OPTIONS = [['Arial', 'Arial'], ['Georgia', 'Georgia'], ['Courier New', 'Courier New']]
 
 export default function Editor({ project, user, onLogout }) {
   const [slot, setSlot] = useState('pdf1')
@@ -17,6 +18,7 @@ export default function Editor({ project, user, onLogout }) {
   const [usersOpen, setUsersOpen] = useState(false)
   const [revision, setRevision] = useState(project.documents.find((value) => value.slot === slot)?.revision || 0)
   const fileRef = useRef(null)
+  const replaceImageRef = useRef(null)
   const collaboration = useCollaboration(project.id, slot, user)
 
   useEffect(() => {
@@ -37,19 +39,75 @@ export default function Editor({ project, user, onLogout }) {
   const select = (page, id) => { setActivePage(page); setSelected(id ? { page, id } : null) }
   const change = (page, id, patch) => collaboration.change(page, id, patch)
   const add = (type, extra = {}) => {
-    const item = { id: newId(), type, x: .1, y: .1, w: type === 'text' ? .48 : .3, h: type === 'text' ? .13 : .25,
-      ...(type === 'text' ? { text: 'Новый текст', fontSize: 28, color: '#111111', background: 'transparent', align: 'left', bold: false } : {}),
-      ...(type === 'cover' ? { color: '#ffffff' } : {}), ...extra }
+    const item = {
+      id: newId(), type, x: .1, y: .1, w: type === 'text' ? .48 : .3, h: type === 'text' ? .13 : .25,
+      ...(type === 'text' ? { text: 'Новый текст', fontSize: 28, fontFamily: 'Arial', color: '#111111', background: 'transparent', align: 'left', bold: false, italic: false } : {}),
+      ...(type === 'cover' ? { color: '#ffffff' } : {}),
+      ...(type === 'shape' ? { shape: 'rectangle', fill: 'transparent', stroke: '#111111', strokeWidth: 2, strokeStyle: 'solid' } : {}),
+      ...extra,
+    }
     collaboration.add(activePage, item); setSelected({ page: activePage, id: item.id })
   }
   const remove = () => { if (!selected) return; collaboration.remove(selected.page, selected.id); setSelected(null) }
   const item = selected ? (collaboration.pages?.[selected.page] || []).find((value) => value.id === selected.id) : null
+  const pageBackground = (collaboration.pages?.[activePage] || []).find((value) => value.type === 'page-background')
+
+  const duplicate = () => {
+    if (!item) return
+    const copy = { ...item, id: newId(), x: Math.min(Math.max(0, 1 - item.w), item.x + .025), y: Math.min(Math.max(0, 1 - item.h), item.y + .025) }
+    collaboration.add(selected.page, copy); setSelected({ page: selected.page, id: copy.id })
+  }
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      const editing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target?.tagName) || event.target?.isContentEditable
+      if (editing) return
+      if ((event.key === 'Delete' || event.key === 'Backspace') && item) { event.preventDefault(); remove() }
+      else if (event.key === 'Escape') setSelected(null)
+      else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+        event.preventDefault(); event.shiftKey ? collaboration.redo() : collaboration.undo()
+      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') {
+        event.preventDefault(); collaboration.redo()
+      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd' && item) {
+        event.preventDefault(); duplicate()
+      } else if (item && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+        event.preventDefault()
+        const step = event.shiftKey ? .02 : .005
+        const patch = {}
+        if (event.key === 'ArrowLeft') patch.x = Math.max(0, item.x - step)
+        if (event.key === 'ArrowRight') patch.x = Math.min(1 - item.w, item.x + step)
+        if (event.key === 'ArrowUp') patch.y = Math.max(0, item.y - step)
+        if (event.key === 'ArrowDown') patch.y = Math.min(1 - item.h, item.y + step)
+        change(selected.page, item.id, patch)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  })
 
   const upload = async (file) => {
     if (!file) return
+    const target = replaceImageRef.current
+    replaceImageRef.current = null
     const data = new FormData(); data.append('file', file)
-    try { const value = await api(`/api/projects/${project.id}/assets`, { method: 'POST', body: data }); add('image', { src: value.url, fit: 'contain' }) }
-    catch (reason) { setError(reason.message) }
+    try {
+      const value = await api(`/api/projects/${project.id}/assets`, { method: 'POST', body: data })
+      if (target) change(target.page, target.id, { src: value.url })
+      else add('image', { src: value.url, fit: 'contain' })
+    } catch (reason) { setError(reason.message) }
+  }
+
+  const blankPage = () => {
+    if (!window.confirm(`Очистить страницу ${activePage} и скрыть исходный PDF-фон?`)) return
+    collaboration.blankPage(activePage); setSelected(null)
+  }
+  const resetPage = () => {
+    if (!window.confirm(`Удалить все изменения со страницы ${activePage} и вернуть исходный шаблон?`)) return
+    collaboration.resetPage(activePage); setSelected(null)
+  }
+  const blankDocument = () => {
+    if (!window.confirm('Создать пустой документ? Все 28 страниц станут белыми, а текущие объекты можно будет вернуть через «Отменить» или историю версий.')) return
+    collaboration.blankDocument(28); setSelected(null)
   }
 
   const publish = async () => {
@@ -93,16 +151,51 @@ export default function Editor({ project, user, onLogout }) {
     </aside>
     <main className="workspace">
       <div className="toolbar">
-        <button onClick={() => add('text')} disabled={!collaboration.ready}>＋ Текст</button><button onClick={() => fileRef.current?.click()} disabled={!collaboration.ready}>＋ Изображение</button>
+        <button title="Отменить (Ctrl+Z)" onClick={collaboration.undo} disabled={!collaboration.canUndo}>↶</button>
+        <button title="Повторить (Ctrl+Y)" onClick={collaboration.redo} disabled={!collaboration.canRedo}>↷</button>
+        <span className="toolbar-divider" />
+        <button onClick={() => add('text')} disabled={!collaboration.ready}>＋ Текст</button>
+        <button onClick={() => { replaceImageRef.current = null; fileRef.current?.click() }} disabled={!collaboration.ready}>＋ Изображение</button>
         <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => { upload(event.target.files?.[0]); event.target.value = '' }} />
-        <button onClick={() => add('cover')} disabled={!collaboration.ready}>＋ Маска</button><button onClick={remove} disabled={!item}>Удалить</button><button onClick={openHistory}>История</button>
+        <select className="toolbar-select" value="" aria-label="Добавить фигуру" onChange={(event) => { if (event.target.value) add('shape', { shape: event.target.value, w: .28, h: event.target.value === 'line' ? .03 : .2 }); event.target.value = '' }}>
+          <option value="">＋ Фигура</option><option value="rectangle">Прямоугольник</option><option value="ellipse">Эллипс</option><option value="line">Линия</option>
+        </select>
+        <button onClick={() => add('cover')} disabled={!collaboration.ready}>＋ Маска</button>
+        <span className="toolbar-divider" />
+        <button onClick={duplicate} disabled={!item} title="Ctrl+D">Дублировать</button>
+        <button className="danger-button" onClick={remove} disabled={!item} title="Delete">Удалить</button>
+        <select className="toolbar-select" value="" aria-label="Очистка документа" onChange={(event) => { const action = event.target.value; event.target.value = ''; if (action === 'blank-page') blankPage(); if (action === 'reset-page') resetPage(); if (action === 'blank-document') blankDocument() }}>
+          <option value="">Очистить…</option><option value="blank-page">Текущую страницу до белого листа</option><option value="reset-page">Вернуть шаблон на странице</option><option value="blank-document">Создать пустой документ</option>
+        </select>
+        {pageBackground && <label className="page-color" title="Цвет чистой страницы">Фон <input type="color" value={pageBackground.color || '#ffffff'} onChange={(event) => change(activePage, pageBackground.id, { color: event.target.value })} /></label>}
+        <button onClick={openHistory}>История</button>
         {(user.role === 'publisher' || user.role === 'admin') && <button className="primary" onClick={publish} disabled={publishing || !collaboration.ready}>{publishing ? 'Собираем PDF…' : 'Опубликовать'}</button>}
         <span className="toolbar-spacer" /><span className={`status ${collaboration.status.includes('Офлайн') ? 'dirty' : ''}`}>{collaboration.status}</span>
       </div>
-      {item && <div className="properties"><b>{item.type === 'text' ? 'Текст' : item.type === 'image' ? 'Изображение' : 'Маска'}</b>
-        {item.type === 'text' && <><label>Размер<input type="number" min="6" max="240" value={item.fontSize} onChange={(event) => change(selected.page, item.id, { fontSize: Number(event.target.value) })} /></label><label>Цвет<input type="color" value={item.color} onChange={(event) => change(selected.page, item.id, { color: event.target.value })} /></label><button onClick={() => change(selected.page, item.id, { bold: !item.bold })}>Жирный</button></>}
-        {item.type === 'image' && <select value={item.fit} onChange={(event) => change(selected.page, item.id, { fit: event.target.value })}><option value="contain">Вписать</option><option value="cover">Заполнить</option></select>}
-        {item.type === 'cover' && <input type="color" value={item.color} onChange={(event) => change(selected.page, item.id, { color: event.target.value })} />}
+      {item && <div className="properties"><b>{item.type === 'text' ? 'Текст' : item.type === 'image' ? 'Изображение' : item.type === 'shape' ? 'Фигура' : 'Маска'}</b>
+        {item.type === 'text' && <>
+          <label>Шрифт<select value={item.fontFamily || 'Arial'} onChange={(event) => change(selected.page, item.id, { fontFamily: event.target.value })}>{FONT_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <label>Размер<input type="number" min="6" max="240" value={item.fontSize} onChange={(event) => change(selected.page, item.id, { fontSize: Number(event.target.value) })} /></label>
+          <label title="Цвет текста">Текст<input type="color" value={item.color} onChange={(event) => change(selected.page, item.id, { color: event.target.value })} /></label>
+          <button className={item.bold ? 'active-tool' : ''} onClick={() => change(selected.page, item.id, { bold: !item.bold })}><b>Ж</b></button>
+          <button className={item.italic ? 'active-tool' : ''} onClick={() => change(selected.page, item.id, { italic: !item.italic })}><i>К</i></button>
+          <label>Выравнивание<select value={item.align || 'left'} onChange={(event) => change(selected.page, item.id, { align: event.target.value })}><option value="left">Слева</option><option value="center">По центру</option><option value="right">Справа</option></select></label>
+          <label title="Фон текстового блока">Подложка<input type="color" value={item.background === 'transparent' ? '#ffffff' : item.background} onChange={(event) => change(selected.page, item.id, { background: event.target.value })} /></label>
+          <button onClick={() => change(selected.page, item.id, { background: 'transparent' })}>Без подложки</button>
+        </>}
+        {item.type === 'image' && <>
+          <label>Размещение<select value={item.fit || 'contain'} onChange={(event) => change(selected.page, item.id, { fit: event.target.value })}><option value="contain">Вписать</option><option value="cover">Заполнить</option></select></label>
+          <button onClick={() => { replaceImageRef.current = selected; fileRef.current?.click() }}>Заменить файл</button>
+        </>}
+        {item.type === 'shape' && <>
+          <label>Фигура<select value={item.shape || 'rectangle'} onChange={(event) => change(selected.page, item.id, { shape: event.target.value })}><option value="rectangle">Прямоугольник</option><option value="ellipse">Эллипс</option><option value="line">Линия</option></select></label>
+          {item.shape !== 'line' && <label>Заливка<input type="color" value={item.fill === 'transparent' ? '#ffffff' : item.fill} onChange={(event) => change(selected.page, item.id, { fill: event.target.value })} /></label>}
+          {item.shape !== 'line' && <button onClick={() => change(selected.page, item.id, { fill: 'transparent' })}>Без заливки</button>}
+          <label>Контур<input type="color" value={item.stroke || '#111111'} onChange={(event) => change(selected.page, item.id, { stroke: event.target.value })} /></label>
+          <label>Толщина<input type="number" min="1" max="20" value={item.strokeWidth || 2} onChange={(event) => change(selected.page, item.id, { strokeWidth: Number(event.target.value) })} /></label>
+          <label>Линия<select value={item.strokeStyle || 'solid'} onChange={(event) => change(selected.page, item.id, { strokeStyle: event.target.value })}><option value="solid">Сплошная</option><option value="dashed">Пунктир</option><option value="dotted">Точки</option></select></label>
+        </>}
+        {item.type === 'cover' && <label>Цвет маски<input type="color" value={item.color} onChange={(event) => change(selected.page, item.id, { color: event.target.value })} /></label>}
       </div>}
       {(error || collaboration.error) && <div className="error-banner">{error || collaboration.error}</div>}
       {collaboration.ready ? <PdfPages pages={collaboration.pages} selected={selected} onSelect={select} onChange={change} /> : <div className="empty-state">Подключаем совместный документ…</div>}

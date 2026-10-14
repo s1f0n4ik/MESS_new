@@ -19,6 +19,7 @@ class StudioApiTests(unittest.TestCase):
         pdf = fitz.open()
         for _ in range(28):
             pdf.new_page(width=1190.55, height=841.89)
+        pdf[0].insert_text((50, 50), "ORIGINAL TEMPLATE")
         pdf.save(template)
         pdf.close()
         os.environ.update({
@@ -94,6 +95,34 @@ class StudioApiTests(unittest.TestCase):
                                        headers={"X-Sync-Token": "sync-test-token"})
             self.assertEqual(response.status_code, 200)
             self.assertEqual(hashlib.sha256(response.content).hexdigest(), item["sha256"])
+
+    def test_extended_editor_elements_are_sanitized_and_rendered(self):
+        from app.main import clean_pages
+        from app.pdf_renderer import render_document
+
+        pages = clean_pages({"1": [
+            {"id": "background-1", "type": "page-background", "x": 0, "y": 0, "w": 1, "h": 1,
+             "color": "#fefefe"},
+            {"id": "styled-text", "type": "text", "x": .1, "y": .1, "w": .6, "h": .2,
+             "text": "Курсивный текст", "fontSize": 24, "fontFamily": "Georgia", "italic": True,
+             "bold": True, "color": "#223344", "background": "transparent", "align": "center"},
+            {"id": "dashed-shape", "type": "shape", "x": .15, "y": .4, "w": .4, "h": .25,
+             "shape": "ellipse", "fill": "transparent", "stroke": "#112233", "strokeWidth": 3,
+             "strokeStyle": "dashed"},
+        ]})
+        self.assertEqual(pages["1"][0]["type"], "page-background")
+        self.assertEqual(pages["1"][1]["fontFamily"], "Georgia")
+        self.assertTrue(pages["1"][1]["italic"])
+        self.assertEqual(pages["1"][2]["strokeStyle"], "dashed")
+
+        root = Path(self.temp.name)
+        output = root / "extended.pdf"
+        render_document(root / "template.pdf", {"pages": pages}, root / "data" / "assets", output)
+        self.assertTrue(output.is_file())
+        rendered = fitz.open(output)
+        self.assertGreater(len(rendered[0].get_drawings()), 0)
+        self.assertNotIn("ORIGINAL TEMPLATE", rendered[0].get_text())
+        rendered.close()
 
 
 if __name__ == "__main__":

@@ -103,7 +103,7 @@ def clean_pages(raw_pages: dict) -> dict:
             continue
         cleaned = []
         for raw in raw_items[:500]:
-            if not isinstance(raw, dict) or raw.get("type") not in {"text", "image", "cover"}:
+            if not isinstance(raw, dict) or raw.get("type") not in {"text", "image", "cover", "shape", "page-background"}:
                 continue
             item = {"id": re.sub(r"[^a-zA-Z0-9_-]", "", str(raw.get("id") or uuid.uuid4().hex))[:80],
                     "type": raw["type"]}
@@ -117,17 +117,26 @@ def clean_pages(raw_pages: dict) -> dict:
             if item["type"] == "text":
                 item.update(text=str(raw.get("text") or "")[:30000],
                             fontSize=max(6, min(240, float(raw.get("fontSize") or 28))),
+                            fontFamily=raw.get("fontFamily") if raw.get("fontFamily") in {"Arial", "Georgia", "Courier New"} else "Arial",
                             color=str(raw.get("color") or "#111111")[:32],
                             background=str(raw.get("background") or "transparent")[:32],
                             align=raw.get("align") if raw.get("align") in {"left", "center", "right"} else "left",
-                            bold=bool(raw.get("bold")))
+                            bold=bool(raw.get("bold")), italic=bool(raw.get("italic")))
             elif item["type"] == "image":
                 source = str(raw.get("src") or "")
                 if not source.startswith("/assets/"):
                     continue
                 item.update(src=source[:600], fit="cover" if raw.get("fit") == "cover" else "contain")
-            else:
+            elif item["type"] in {"cover", "page-background"}:
                 item["color"] = str(raw.get("color") or "#ffffff")[:32]
+            else:
+                item.update(
+                    shape=raw.get("shape") if raw.get("shape") in {"rectangle", "ellipse", "line"} else "rectangle",
+                    fill=str(raw.get("fill") or "transparent")[:32],
+                    stroke=str(raw.get("stroke") or "#111111")[:32],
+                    strokeWidth=max(1, min(20, float(raw.get("strokeWidth") or 2))),
+                    strokeStyle=raw.get("strokeStyle") if raw.get("strokeStyle") in {"solid", "dashed", "dotted"} else "solid",
+                )
             cleaned.append(item)
         if cleaned:
             pages[str(page_number)] = cleaned

@@ -4,7 +4,12 @@ import { IndexeddbPersistence } from 'y-indexeddb'
 import * as Y from 'yjs'
 import { collaborationUrl, session } from './api'
 
-const primitiveKeys = ['id', 'type', 'x', 'y', 'w', 'h', 'fontSize', 'color', 'background', 'align', 'bold', 'src', 'fit']
+const primitiveKeys = [
+  'id', 'type', 'x', 'y', 'w', 'h', 'fontSize', 'fontFamily', 'color', 'background',
+  'align', 'bold', 'italic', 'src', 'fit', 'shape', 'fill', 'stroke',
+  'strokeWidth', 'strokeStyle',
+]
+const EDITOR_ORIGIN = Symbol('postcards-editor')
 
 function toElement(value) {
   const element = new Y.Map()
@@ -68,11 +73,25 @@ export function useCollaboration(projectId, slot, user) {
   const [status, setStatus] = useState('Подключаемся…')
   const [people, setPeople] = useState([])
   const [error, setError] = useState('')
+  const [canUndo, setCanUndo] = useState(false)
+  const [canRedo, setCanRedo] = useState(false)
+  const undoRef = useRef(null)
 
   useEffect(() => {
-    setReady(false); setStatus('Подключаемся…'); setPeople([]); setError('')
+    setReady(false); setStatus('Подключаемся…'); setPeople([]); setError(''); setCanUndo(false); setCanRedo(false)
     const document = new Y.Doc()
     documentRef.current = document
+    const undoManager = new Y.UndoManager(document.getMap('pages'), {
+      trackedOrigins: new Set([EDITOR_ORIGIN]), captureTimeout: 350,
+    })
+    undoRef.current = undoManager
+    const refreshUndo = () => {
+      setCanUndo(undoManager.undoStack.length > 0)
+      setCanRedo(undoManager.redoStack.length > 0)
+    }
+    undoManager.on('stack-item-added', refreshUndo)
+    undoManager.on('stack-item-popped', refreshUndo)
+    undoManager.on('stack-cleared', refreshUndo)
     const offline = new IndexeddbPersistence(`postcards-${roomName}`, document)
     const refresh = () => setPages(pagesToJson(document))
     document.on('update', refresh)
@@ -87,14 +106,15 @@ export function useCollaboration(projectId, slot, user) {
     provider.setAwarenessField('user', { name: user.name, email: user.email, color: colorFor(user.email) })
     offline.on('synced', () => { refresh(); setReady(true) })
     return () => {
-      provider.destroy(); offline.destroy(); document.off('update', refresh); document.destroy()
+      provider.destroy(); offline.destroy(); document.off('update', refresh); undoManager.destroy(); document.destroy()
       documentRef.current = null
+      undoRef.current = null
     }
   }, [roomName, user.email, user.name])
 
   const transact = useCallback((callback) => {
     const document = documentRef.current
-    if (document) document.transact(() => callback(document.getMap('pages')), 'editor')
+    if (document) document.transact(() => callback(document.getMap('pages')), EDITOR_ORIGIN)
   }, [])
 
   const change = useCallback((page, id, patch) => transact((pagesMap) => {
@@ -122,7 +142,32 @@ export function useCollaboration(projectId, slot, user) {
     if (index >= 0) list.delete(index, 1)
   }), [transact])
 
+  const resetPage = useCallback((page) => transact((pagesMap) => {
+    pagesMap.delete(String(page))
+  }), [transact])
+
+  const blankPage = useCallback((page) => transact((pagesMap) => {
+    const list = new Y.Array()
+    list.push([toElement({ id: `background-${page}`, type: 'page-background', x: 0, y: 0, w: 1, h: 1, color: '#ffffff' })])
+    pagesMap.set(String(page), list)
+  }), [transact])
+
+  const blankDocument = useCallback((pageCount = 28) => transact((pagesMap) => {
+    for (const key of Array.from(pagesMap.keys())) pagesMap.delete(key)
+    for (let page = 1; page <= pageCount; page += 1) {
+      const list = new Y.Array()
+      list.push([toElement({ id: `background-${page}`, type: 'page-background', x: 0, y: 0, w: 1, h: 1, color: '#ffffff' })])
+      pagesMap.set(String(page), list)
+    }
+  }), [transact])
+
+  const undo = useCallback(() => undoRef.current?.undo(), [])
+  const redo = useCallback(() => undoRef.current?.redo(), [])
+
   const replace = useCallback((value) => { if (documentRef.current) replacePages(documentRef.current, value) }, [])
   const snapshot = useCallback(() => documentRef.current ? pagesToJson(documentRef.current) : {}, [])
-  return { pages, ready, status, people, error, change, add, remove, replace, snapshot }
+  return {
+    pages, ready, status, people, error, change, add, remove, resetPage, blankPage,
+    blankDocument, undo, redo, canUndo, canRedo, replace, snapshot,
+  }
 }
