@@ -7,7 +7,8 @@ import { collaborationUrl, session } from './api'
 const primitiveKeys = [
   'id', 'type', 'x', 'y', 'w', 'h', 'fontSize', 'fontFamily', 'color', 'background',
   'align', 'bold', 'italic', 'src', 'fit', 'shape', 'fill', 'stroke',
-  'strokeWidth', 'strokeStyle',
+  'strokeWidth', 'strokeStyle', 'locked', 'role', 'placeholder', 'sequence',
+  'cardIndex', 'sourceLabel',
 ]
 const EDITOR_ORIGIN = Symbol('postcards-editor')
 
@@ -47,7 +48,7 @@ function setText(text, nextValue) {
   if (insert) text.insert(prefix, insert)
 }
 
-export function replacePages(document, rawPages = {}) {
+export function replacePages(document, rawPages = {}, origin = 'history-restore') {
   const pages = document.getMap('pages')
   document.transact(() => {
     for (const key of Array.from(pages.keys())) pages.delete(key)
@@ -55,7 +56,7 @@ export function replacePages(document, rawPages = {}) {
       if (!Array.isArray(values) || !values.length) continue
       const list = new Y.Array(); list.push(values.map(toElement)); pages.set(String(number), list)
     }
-  }, 'history-restore')
+  }, origin)
 }
 
 function colorFor(value) {
@@ -142,6 +143,16 @@ export function useCollaboration(projectId, slot, user) {
     if (index >= 0) list.delete(index, 1)
   }), [transact])
 
+  const changeAllText = useCallback((patch) => transact((pagesMap) => {
+    for (const list of pagesMap.values()) {
+      if (!(list instanceof Y.Array)) continue
+      for (const element of list.toArray()) {
+        if (!(element instanceof Y.Map) || element.get('type') !== 'text') continue
+        for (const [key, value] of Object.entries(patch)) element.set(key, value)
+      }
+    }
+  }), [transact])
+
   const resetPage = useCallback((page) => transact((pagesMap) => {
     pagesMap.delete(String(page))
   }), [transact])
@@ -164,10 +175,10 @@ export function useCollaboration(projectId, slot, user) {
   const undo = useCallback(() => undoRef.current?.undo(), [])
   const redo = useCallback(() => undoRef.current?.redo(), [])
 
-  const replace = useCallback((value) => { if (documentRef.current) replacePages(documentRef.current, value) }, [])
+  const replace = useCallback((value) => { if (documentRef.current) replacePages(documentRef.current, value, EDITOR_ORIGIN) }, [])
   const snapshot = useCallback(() => documentRef.current ? pagesToJson(documentRef.current) : {}, [])
   return {
     pages, ready, status, people, error, change, add, remove, resetPage, blankPage,
-    blankDocument, undo, redo, canUndo, canRedo, replace, snapshot,
+    blankDocument, changeAllText, undo, redo, canUndo, canRedo, replace, snapshot,
   }
 }

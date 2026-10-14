@@ -55,6 +55,15 @@ class DocumentRevision(Base):
     created_by: Mapped[str] = mapped_column(String(320))
 
 
+class DocumentTemplate(Base):
+    __tablename__ = "document_templates"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), unique=True, index=True)
+    content_json: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_by: Mapped[str] = mapped_column(String(320))
+
+
 class Release(Base):
     __tablename__ = "releases"
     id: Mapped[str] = mapped_column(String(80), primary_key=True)

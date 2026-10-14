@@ -4,9 +4,12 @@ import json
 import os
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 
 import pymupdf as fitz
+from docx import Document as WordDocument
+from docx.shared import Inches
 from fastapi.testclient import TestClient
 
 
@@ -170,6 +173,56 @@ class StudioApiTests(unittest.TestCase):
         self.assertEqual(len(result), 28)
         self.assertIn("Вторая версия", result[0].get_text().replace("\xa0", " "))
         result.close()
+
+    def test_template_and_word_table_import(self):
+        template_pages = {"1": [
+            {"id": "background-1", "type": "page-background", "x": 0, "y": 0, "w": 1, "h": 1,
+             "color": "#ffffff", "locked": True},
+            {"id": "scan-1-0", "type": "image", "x": .05, "y": .05, "w": .4, "h": .3,
+             "src": "", "fit": "contain", "locked": True, "role": "scan", "sequence": 1,
+             "cardIndex": 1},
+            {"id": "body-1-0", "type": "text", "x": .05, "y": .4, "w": .4, "h": .5,
+             "text": "Редактируемое поле", "fontSize": 18, "fontFamily": "Times New Roman",
+             "color": "#111111", "background": "transparent", "align": "left",
+             "locked": True, "role": "body", "cardIndex": 1},
+        ]}
+        saved = self.client.put("/api/projects/1/documents/pdf1/template", headers=self.headers,
+                                json={"pages": template_pages})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        loaded = self.client.get("/api/projects/1/documents/pdf1/template", headers=self.headers)
+        self.assertEqual(loaded.status_code, 200, loaded.text)
+        self.assertEqual(loaded.json()["pages"]["1"][1]["role"], "scan")
+        self.assertEqual(loaded.json()["pages"]["1"][1]["src"], "")
+        self.assertEqual(loaded.json()["pages"]["1"][2]["fontFamily"], "Times New Roman")
+
+        root = Path(self.temp.name)
+        red = root / "red.png"
+        blue = root / "blue.png"
+        placeholder = root / "placeholder.png"
+        for target, color in ((red, (255, 0, 0)), (blue, (0, 0, 255)), (placeholder, (255, 255, 255))):
+            pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 8, 8), False)
+            for y in range(8):
+                for x in range(8):
+                    pixmap.set_pixel(x, y, color)
+            pixmap.save(target)
+        word = WordDocument()
+        word.add_table(rows=1, cols=1).cell(0, 0).paragraphs[0].add_run().add_picture(str(red), width=Inches(.2))
+        table = word.add_table(rows=1, cols=3)
+        table.cell(0, 0).text = "Первый"
+        table.cell(0, 0).paragraphs[0].add_run().add_picture(str(red), width=Inches(.2))
+        table.cell(0, 1).paragraphs[0].add_run().add_picture(str(placeholder), width=Inches(.2))
+        table.cell(0, 2).text = "Второй"
+        table.cell(0, 2).paragraphs[0].add_run().add_picture(str(placeholder), width=Inches(.2))
+        table.cell(0, 2).paragraphs[0].add_run().add_picture(str(blue), width=Inches(.2))
+        buffer = BytesIO()
+        word.save(buffer)
+        imported = self.client.post("/api/projects/1/assets/import-docx", headers=self.headers,
+                                    files={"file": ("table.docx", buffer.getvalue(),
+                                                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document")})
+        self.assertEqual(imported.status_code, 200, imported.text)
+        self.assertEqual(imported.json()["count"], 2)
+        self.assertEqual([item["label"] for item in imported.json()["assets"]], ["Первый", "Второй"])
+        self.assertEqual([item["number"] for item in imported.json()["assets"]], [1, 2])
 
 
 if __name__ == "__main__":

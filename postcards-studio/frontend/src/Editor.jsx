@@ -5,7 +5,34 @@ import PdfPages from './PdfPages'
 import UserDialog from './UserDialog'
 
 const newId = () => `e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
-const FONT_OPTIONS = [['Arial', 'Arial'], ['Georgia', 'Georgia'], ['Courier New', 'Courier New']]
+const FONT_OPTIONS = [['Times New Roman', 'Times New Roman'], ['Arial', 'Arial'], ['Georgia', 'Georgia'], ['Courier New', 'Courier New']]
+
+function editableLayout(pageCount = 28) {
+  const pages = {}
+  for (let page = 1; page <= pageCount; page += 1) {
+    const items = [{ id: `background-${page}`, type: 'page-background', x: 0, y: 0, w: 1, h: 1, color: '#ffffff', locked: true }]
+    for (let column = 0; column < 2; column += 1) {
+      const cardIndex = (page - 1) * 2 + column + 1
+      const x = column ? .515 : .03
+      items.push(
+        { id: `outline-${page}-${column}`, type: 'shape', shape: 'rectangle', x, y: .035, w: .455, h: .93,
+          fill: 'transparent', stroke: '#777777', strokeWidth: 1, strokeStyle: 'dotted', locked: true, role: 'outline', cardIndex },
+        { id: `scan-${page}-${column}`, type: 'image', x: x + .04, y: .06, w: .375, h: .27, src: '', fit: 'contain',
+          locked: true, role: 'scan', sequence: cardIndex, cardIndex },
+        { id: `caption-${page}-${column}`, type: 'text', x: x + .02, y: .345, w: .415, h: .075, text: '',
+          placeholder: 'Подпись под изображением', fontSize: 12, fontFamily: 'Times New Roman', color: '#111111',
+          background: 'transparent', align: 'right', bold: false, italic: false, locked: true, role: 'caption', cardIndex },
+        { id: `body-${page}-${column}`, type: 'text', x: x + .02, y: .43, w: .415, h: .515, text: '',
+          placeholder: 'Текст экфрасиса и экспликации', fontSize: 18, fontFamily: 'Times New Roman', color: '#111111',
+          background: 'transparent', align: 'left', bold: false, italic: false, locked: true, role: 'body', cardIndex },
+      )
+    }
+    items.push({ id: `divider-${page}`, type: 'shape', shape: 'line', x: .5, y: .025, w: .002, h: .95,
+      fill: 'transparent', stroke: '#333333', strokeWidth: 2, strokeStyle: 'solid', locked: true, role: 'divider' })
+    pages[page] = items
+  }
+  return pages
+}
 
 export default function Editor({ project, user, onLogout }) {
   const [slot, setSlot] = useState('pdf1')
@@ -17,9 +44,11 @@ export default function Editor({ project, user, onLogout }) {
   const [lastRelease, setLastRelease] = useState(null)
   const [history, setHistory] = useState(null)
   const [usersOpen, setUsersOpen] = useState(false)
+  const [notice, setNotice] = useState('')
   const [revision, setRevision] = useState(project.documents.find((value) => value.slot === slot)?.revision || 0)
   const fileRef = useRef(null)
   const replaceImageRef = useRef(null)
+  const docxRef = useRef(null)
   const collaboration = useCollaboration(project.id, slot, user)
 
   useEffect(() => {
@@ -42,7 +71,7 @@ export default function Editor({ project, user, onLogout }) {
   const add = (type, extra = {}) => {
     const item = {
       id: newId(), type, x: .1, y: .1, w: type === 'text' ? .48 : .3, h: type === 'text' ? .13 : .25,
-      ...(type === 'text' ? { text: 'Новый текст', fontSize: 28, fontFamily: 'Arial', color: '#111111', background: 'transparent', align: 'left', bold: false, italic: false } : {}),
+      ...(type === 'text' ? { text: 'Новый текст', fontSize: 28, fontFamily: 'Times New Roman', color: '#111111', background: 'transparent', align: 'left', bold: false, italic: false } : {}),
       ...(type === 'cover' ? { color: '#ffffff' } : {}),
       ...(type === 'shape' ? { shape: 'rectangle', fill: 'transparent', stroke: '#111111', strokeWidth: 2, strokeStyle: 'solid' } : {}),
       ...extra,
@@ -71,7 +100,7 @@ export default function Editor({ project, user, onLogout }) {
         event.preventDefault(); collaboration.redo()
       } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd' && item) {
         event.preventDefault(); duplicate()
-      } else if (item && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+      } else if (item && !item.locked && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
         event.preventDefault()
         const step = event.shiftKey ? .02 : .005
         const patch = {}
@@ -95,6 +124,53 @@ export default function Editor({ project, user, onLogout }) {
       const value = await api(`/api/projects/${project.id}/assets`, { method: 'POST', body: data })
       if (target) change(target.page, target.id, { src: value.url })
       else add('image', { src: value.url, fit: 'contain' })
+    } catch (reason) { setError(reason.message) }
+  }
+
+  const createLayout = () => {
+    if (!window.confirm('Создать редактируемый макет на 28 страниц? Текущее состояние можно вернуть через «Отменить» или историю.')) return
+    collaboration.replace(editableLayout())
+    setSelected(null); setNotice('Создан макет с фиксированными полями и единым шрифтом Times New Roman')
+  }
+
+  const importWordTable = async (file) => {
+    if (!file) return
+    const data = new FormData(); data.append('file', file)
+    setError(''); setNotice('Загружаем таблицу и расставляем изображения…')
+    try {
+      const imported = await api(`/api/projects/${project.id}/assets/import-docx`, { method: 'POST', body: data })
+      const current = structuredClone(collaboration.snapshot())
+      let slots = Object.values(current).flat().filter((value) => value.type === 'image' && value.role === 'scan')
+      const pages = slots.length ? current : editableLayout()
+      slots = Object.values(pages).flat().filter((value) => value.type === 'image' && value.role === 'scan')
+        .sort((a, b) => Number(a.cardIndex || 0) - Number(b.cardIndex || 0))
+      for (const slotValue of slots) { slotValue.src = ''; slotValue.sourceLabel = ''; slotValue.sequence = slotValue.cardIndex }
+      imported.assets.forEach((asset, index) => {
+        if (!slots[index]) return
+        slots[index].src = asset.url
+        slots[index].sequence = asset.number
+        slots[index].sourceLabel = asset.label
+      })
+      collaboration.replace(pages); setSelected(null)
+      setNotice(`Импортировано ${imported.count} изображений из последней таблицы; порядок — слева направо, сверху вниз`)
+    } catch (reason) { setError(reason.message); setNotice('') }
+  }
+
+  const saveTemplate = async () => {
+    if (!window.confirm('Сохранить текущее расположение, тексты и изображения как шаблон этого документа?')) return
+    try {
+      await api(`/api/projects/${project.id}/documents/${slot}/template`, {
+        method: 'PUT', body: JSON.stringify({ pages: collaboration.snapshot() }),
+      })
+      setNotice('Шаблон сохранён. Содержимое полей остаётся редактируемым, а геометрия закреплена.')
+    } catch (reason) { setError(reason.message) }
+  }
+
+  const applyTemplate = async () => {
+    if (!window.confirm('Заменить текущее состояние сохранённым шаблоном?')) return
+    try {
+      const value = await api(`/api/projects/${project.id}/documents/${slot}/template`)
+      collaboration.replace(value.pages); setSelected(null); setNotice('Сохранённый шаблон применён')
     } catch (reason) { setError(reason.message) }
   }
 
@@ -171,6 +247,9 @@ export default function Editor({ project, user, onLogout }) {
         <button onClick={() => add('text')} disabled={!collaboration.ready}>＋ Текст</button>
         <button onClick={() => { replaceImageRef.current = null; fileRef.current?.click() }} disabled={!collaboration.ready}>＋ Изображение</button>
         <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => { upload(event.target.files?.[0]); event.target.value = '' }} />
+        <button onClick={() => docxRef.current?.click()} disabled={!collaboration.ready}>Импорт таблицы Word</button>
+        <input ref={docxRef} type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden
+          onChange={(event) => { importWordTable(event.target.files?.[0]); event.target.value = '' }} />
         <select className="toolbar-select" value="" aria-label="Добавить фигуру" onChange={(event) => { if (event.target.value) add('shape', { shape: event.target.value, w: .28, h: event.target.value === 'line' ? .03 : .2 }); event.target.value = '' }}>
           <option value="">＋ Фигура</option><option value="rectangle">Прямоугольник</option><option value="ellipse">Эллипс</option><option value="line">Линия</option>
         </select>
@@ -181,6 +260,9 @@ export default function Editor({ project, user, onLogout }) {
         <select className="toolbar-select" value="" aria-label="Очистка документа" onChange={(event) => { const action = event.target.value; event.target.value = ''; if (action === 'blank-page') blankPage(); if (action === 'reset-page') resetPage(); if (action === 'blank-document') blankDocument() }}>
           <option value="">Очистить…</option><option value="blank-page">Текущую страницу до белого листа</option><option value="reset-page">Вернуть шаблон на странице</option><option value="blank-document">Создать пустой документ</option>
         </select>
+        <button onClick={createLayout} disabled={!collaboration.ready}>Новый редактируемый макет</button>
+        <button onClick={applyTemplate} disabled={!collaboration.ready}>Применить шаблон</button>
+        {(user.role === 'publisher' || user.role === 'admin') && <button onClick={saveTemplate} disabled={!collaboration.ready}>Сохранить как шаблон</button>}
         {pageBackground && <label className="page-color" title="Цвет чистой страницы">Фон <input type="color" value={pageBackground.color || '#ffffff'} onChange={(event) => change(activePage, pageBackground.id, { color: event.target.value })} /></label>}
         <button onClick={openHistory}>История</button>
         <button onClick={exportPdf} disabled={exporting || !collaboration.ready}>{exporting ? 'Готовим PDF…' : 'Скачать PDF'}</button>
@@ -189,7 +271,7 @@ export default function Editor({ project, user, onLogout }) {
       </div>
       {item && <div className="properties"><b>{item.type === 'text' ? 'Текст' : item.type === 'image' ? 'Изображение' : item.type === 'shape' ? 'Фигура' : 'Маска'}</b>
         {item.type === 'text' && <>
-          <label>Шрифт<select value={item.fontFamily || 'Arial'} onChange={(event) => change(selected.page, item.id, { fontFamily: event.target.value })}>{FONT_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <label>Единый шрифт<select value={item.fontFamily || 'Times New Roman'} onChange={(event) => collaboration.changeAllText({ fontFamily: event.target.value })}>{FONT_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label>Размер<input type="number" min="6" max="240" value={item.fontSize} onChange={(event) => change(selected.page, item.id, { fontSize: Number(event.target.value) })} /></label>
           <label title="Цвет текста">Текст<input type="color" value={item.color} onChange={(event) => change(selected.page, item.id, { color: event.target.value })} /></label>
           <button className={item.bold ? 'active-tool' : ''} onClick={() => change(selected.page, item.id, { bold: !item.bold })}><b>Ж</b></button>
@@ -199,6 +281,7 @@ export default function Editor({ project, user, onLogout }) {
           <button onClick={() => change(selected.page, item.id, { background: 'transparent' })}>Без подложки</button>
         </>}
         {item.type === 'image' && <>
+          {item.sequence && <span>№ {item.sequence}{item.sourceLabel ? ` · ${item.sourceLabel}` : ''}</span>}
           <label>Размещение<select value={item.fit || 'contain'} onChange={(event) => change(selected.page, item.id, { fit: event.target.value })}><option value="contain">Вписать</option><option value="cover">Заполнить</option></select></label>
           <button onClick={() => { replaceImageRef.current = selected; fileRef.current?.click() }}>Заменить файл</button>
         </>}
@@ -211,8 +294,10 @@ export default function Editor({ project, user, onLogout }) {
           <label>Линия<select value={item.strokeStyle || 'solid'} onChange={(event) => change(selected.page, item.id, { strokeStyle: event.target.value })}><option value="solid">Сплошная</option><option value="dashed">Пунктир</option><option value="dotted">Точки</option></select></label>
         </>}
         {item.type === 'cover' && <label>Цвет маски<input type="color" value={item.color} onChange={(event) => change(selected.page, item.id, { color: event.target.value })} /></label>}
+        {item.type !== 'page-background' && <button onClick={() => change(selected.page, item.id, { locked: !item.locked })}>{item.locked ? 'Разблокировать положение' : 'Закрепить положение'}</button>}
       </div>}
       {(error || collaboration.error) && <div className="error-banner">{error || collaboration.error}</div>}
+      {notice && !error && !collaboration.error && <div className="notice-banner">{notice}</div>}
       {collaboration.ready ? <PdfPages pages={collaboration.pages} selected={selected} onSelect={select} onChange={change} /> : <div className="empty-state">Подключаем совместный документ…</div>}
     </main>
     {history && <div className="dialog-backdrop" onMouseDown={() => setHistory(null)}><section className="dialog history-dialog" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>История документа</h2><p>Восстановление станет общим для всех медиаторов</p></div><button onClick={() => setHistory(null)}>Закрыть</button></header><div className="history-list">{history.length ? history.map((entry) => <button key={entry.revision} onClick={() => restore(entry.revision)}><b>Версия {entry.revision}</b><span>{new Date(entry.createdAt).toLocaleString('ru-RU')}</span><small>{entry.createdBy}</small></button>) : <p>Сохранённых версий пока нет.</p>}</div></section></div>}

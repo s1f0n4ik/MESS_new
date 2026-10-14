@@ -51,21 +51,24 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
         const active = selected?.page === number && selected?.id === item.id
         const style = { left: `${item.x * 100}%`, top: `${item.y * 100}%`, width: `${item.w * 100}%`, height: `${item.h * 100}%` }
         if (item.type === 'page-background') style.pointerEvents = 'none'
-        return <div key={item.id} className={`editor-item ${active ? 'selected' : ''} item-${item.type}`} style={style}>
-          {item.type === 'text' && <textarea value={item.text} onFocus={() => onSelect(number, item.id)}
+        return <div key={item.id} className={`editor-item ${active ? 'selected' : ''} ${item.locked ? 'locked' : ''} item-${item.type}`} style={style}
+          onPointerDown={(event) => { if (item.locked) { event.stopPropagation(); onSelect(number, item.id) } }}>
+          {item.type === 'text' && <textarea value={item.text} placeholder={item.placeholder || ''} onFocus={() => onSelect(number, item.id)}
             onChange={(e) => onChange(number, item.id, { text: e.target.value })}
             style={{ fontSize: `${Math.max(10, item.fontSize * .55)}px`, color: item.color, background: item.background,
-                     fontFamily: item.fontFamily || 'Arial, sans-serif', fontWeight: item.bold ? 700 : 400,
+                     fontFamily: item.fontFamily || 'Times New Roman, serif', fontWeight: item.bold ? 700 : 400,
                      fontStyle: item.italic ? 'italic' : 'normal', textAlign: item.align }} />}
-          {item.type === 'image' && <img src={item.src} draggable="false" style={{ objectFit: item.fit || 'contain' }} />}
+          {item.type === 'image' && (item.src
+            ? <img src={item.src} draggable="false" style={{ objectFit: item.fit || 'contain' }} />
+            : <div className="image-placeholder"><b>Изображение {item.sequence || item.cardIndex || ''}</b><span>Выберите слот и загрузите файл</span></div>)}
           {item.type === 'cover' && <div className="cover" style={{ background: item.color || '#fff' }} />}
           {item.type === 'page-background' && <div className="page-background" style={{ background: item.color || '#fff' }} />}
           {item.type === 'shape' && <div className={`shape shape-${item.shape || 'rectangle'}`} style={{
             '--shape-fill': item.fill || 'transparent', '--shape-stroke': item.stroke || '#111111',
             '--shape-width': `${item.strokeWidth || 2}px`, '--shape-style': item.strokeStyle || 'solid',
           }} />}
-          {item.type !== 'page-background' && <div className="drag-surface" onPointerDown={(e) => pointerStart(e, item, 'move')} />}
-          {active && item.type !== 'page-background' && <button className="resize-handle" aria-label="Изменить размер" onPointerDown={(e) => pointerStart(e, item, 'resize')} />}
+          {item.type !== 'page-background' && !item.locked && <div className="drag-surface" onPointerDown={(e) => pointerStart(e, item, 'move')} />}
+          {active && item.type !== 'page-background' && !item.locked && <button className="resize-handle" aria-label="Изменить размер" onPointerDown={(e) => pointerStart(e, item, 'resize')} />}
         </div>
       })}
     </div>

@@ -10,6 +10,12 @@ import pymupdf as fitz
 
 
 FONT_CANDIDATES = {
+    "Times New Roman": {
+        "regular": (Path("C:/Windows/Fonts/times.ttf"), Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf")),
+        "bold": (Path("C:/Windows/Fonts/timesbd.ttf"), Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf")),
+        "italic": (Path("C:/Windows/Fonts/timesi.ttf"), Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Italic.ttf")),
+        "bolditalic": (Path("C:/Windows/Fonts/timesbi.ttf"), Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif-BoldItalic.ttf")),
+    },
     "Arial": {
         "regular": (Path("C:/Windows/Fonts/arial.ttf"), Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")),
         "bold": (Path("C:/Windows/Fonts/arialbd.ttf"), Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")),

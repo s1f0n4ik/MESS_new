@@ -5,10 +5,14 @@ import hmac
 import re
 import shutil
 import uuid
+from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 
+from docx import Document as WordDocument
+from docx.oxml.ns import qn
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -18,10 +22,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .db import Document, DocumentRevision, Project, Release, SessionLocal, User, init_db, session_scope
+from .db import (Document, DocumentRevision, DocumentTemplate, Project, Release,
+                 SessionLocal, User, init_db, session_scope)
 from .pdf_renderer import publish_release, render_document
 from .schemas import (CollaborationAuthBody, CollaborationSnapshotBody, CreateUserBody,
-                      LoginBody, RestoreBody, SaveDocumentBody)
+                      LoginBody, RestoreBody, SaveDocumentBody, SaveTemplateBody)
 from .security import (current_user, decode_token, hash_password, make_token, publisher,
                        sync_access, verify_password)
 
@@ -118,14 +123,16 @@ def clean_pages(raw_pages: dict) -> dict:
             if item["type"] == "text":
                 item.update(text=str(raw.get("text") or "")[:30000],
                             fontSize=max(6, min(240, float(raw.get("fontSize") or 28))),
-                            fontFamily=raw.get("fontFamily") if raw.get("fontFamily") in {"Arial", "Georgia", "Courier New"} else "Arial",
+                            fontFamily=raw.get("fontFamily") if raw.get("fontFamily") in {"Arial", "Georgia", "Courier New", "Times New Roman"} else "Times New Roman",
                             color=str(raw.get("color") or "#111111")[:32],
                             background=str(raw.get("background") or "transparent")[:32],
                             align=raw.get("align") if raw.get("align") in {"left", "center", "right"} else "left",
                             bold=bool(raw.get("bold")), italic=bool(raw.get("italic")))
             elif item["type"] == "image":
                 source = str(raw.get("src") or "")
-                if not source.startswith("/assets/"):
+                if source and not source.startswith("/assets/"):
+                    continue
+                if not source and raw.get("role") != "scan":
                     continue
                 item.update(src=source[:600], fit="cover" if raw.get("fit") == "cover" else "contain")
             elif item["type"] in {"cover", "page-background"}:
@@ -138,6 +145,18 @@ def clean_pages(raw_pages: dict) -> dict:
                     strokeWidth=max(1, min(20, float(raw.get("strokeWidth") or 2))),
                     strokeStyle=raw.get("strokeStyle") if raw.get("strokeStyle") in {"solid", "dashed", "dotted"} else "solid",
                 )
+            item["locked"] = bool(raw.get("locked"))
+            if raw.get("role") in {"scan", "caption", "body", "outline", "divider"}:
+                item["role"] = raw["role"]
+            if "placeholder" in raw:
+                item["placeholder"] = str(raw.get("placeholder") or "")[:300]
+            if "sourceLabel" in raw:
+                item["sourceLabel"] = str(raw.get("sourceLabel") or "")[:500]
+            for key in ("sequence", "cardIndex"):
+                try:
+                    item[key] = max(1, min(9999, int(raw[key])))
+                except (KeyError, TypeError, ValueError):
+                    pass
             cleaned.append(item)
         if cleaned:
             pages[str(page_number)] = cleaned
@@ -464,6 +483,92 @@ async def upload_asset(project_id: int, file: UploadFile = File(...),
     name = f"{uuid.uuid4().hex}{extension}"
     (folder / name).write_bytes(data)
     return {"url": f"/assets/{project_id}/{name}", "name": name, "size": len(data)}
+
+
+@app.post("/api/projects/{project_id}/assets/import-docx")
+async def import_docx_assets(project_id: int, file: UploadFile = File(...),
+                             user: User = Depends(current_user), db: Session = Depends(session_scope)):
+    del user
+    if not db.get(Project, project_id):
+        raise HTTPException(404, "Проект не найден")
+    if Path(file.filename or "").suffix.lower() != ".docx":
+        raise HTTPException(400, "Выберите таблицу в формате DOCX")
+    data = await file.read(60 * 1024 * 1024 + 1)
+    if len(data) > 60 * 1024 * 1024:
+        raise HTTPException(413, "DOCX больше 60 МБ")
+    try:
+        source = WordDocument(BytesIO(data))
+    except Exception as exc:
+        raise HTTPException(400, "Не удалось прочитать DOCX") from exc
+    if not source.tables:
+        raise HTTPException(400, "В DOCX нет таблиц")
+    table = source.tables[-1]
+    ordered = []
+    occurrences = Counter()
+    cells = []
+    for row_index, row in enumerate(table.rows):
+        for column_index, cell in enumerate(row.cells):
+            relation_ids = [node.get(qn("r:embed")) for node in cell._tc.xpath(".//a:blip")]
+            occurrences.update(relation_ids)
+            cells.append((row_index, column_index, " ".join(cell.text.split()), relation_ids))
+    seen = set()
+    for row_index, column_index, label, relation_ids in cells:
+        for relation_id in relation_ids:
+            # Repeated image relationships in supplied tables are blank cell placeholders.
+            if not relation_id or occurrences[relation_id] > 1 or relation_id in seen:
+                continue
+            seen.add(relation_id)
+            part = source.part.related_parts.get(relation_id)
+            content_type = getattr(part, "content_type", "")
+            extension = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}.get(content_type)
+            if not extension:
+                continue
+            ordered.append((row_index, column_index, label, part.blob, extension))
+    if not ordered:
+        raise HTTPException(400, "В последней таблице не найдено изображений")
+    folder = assets_root / str(project_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    result = []
+    for number, (row_index, column_index, label, blob, extension) in enumerate(ordered, 1):
+        name = f"table-{number:03d}-{uuid.uuid4().hex}{extension}"
+        (folder / name).write_bytes(blob)
+        result.append({"number": number, "row": row_index + 1, "column": column_index + 1,
+                       "label": label, "url": f"/assets/{project_id}/{name}"})
+    return {"tableIndex": len(source.tables), "count": len(result), "assets": result}
+
+
+@app.get("/api/projects/{project_id}/documents/{slot}/template")
+def get_document_template(project_id: int, slot: str, user: User = Depends(current_user),
+                          db: Session = Depends(session_scope)):
+    del user
+    document = find_document(db, project_id, slot)
+    value = db.scalar(select(DocumentTemplate).where(DocumentTemplate.document_id == document.id))
+    if not value:
+        raise HTTPException(404, "Сохранённый шаблон ещё не создан")
+    content = json.loads(value.content_json)
+    return {"pages": content.get("pages") or {}, "updatedAt": iso(value.updated_at),
+            "updatedBy": value.updated_by}
+
+
+@app.put("/api/projects/{project_id}/documents/{slot}/template")
+def save_document_template(project_id: int, slot: str, body: SaveTemplateBody,
+                           user: User = Depends(publisher), db: Session = Depends(session_scope)):
+    document = find_document(db, project_id, slot)
+    pages = clean_pages(body.pages)
+    payload = json.dumps({"pages": pages}, ensure_ascii=False, separators=(",", ":"))
+    if len(payload.encode("utf-8")) > 4 * 1024 * 1024:
+        raise HTTPException(413, "Шаблон слишком большой")
+    value = db.scalar(select(DocumentTemplate).where(DocumentTemplate.document_id == document.id))
+    if value:
+        value.content_json = payload
+        value.updated_at = now()
+        value.updated_by = user.email
+    else:
+        value = DocumentTemplate(document_id=document.id, content_json=payload,
+                                 updated_at=now(), updated_by=user.email)
+        db.add(value)
+    db.commit()
+    return {"saved": True, "updatedAt": iso(value.updated_at), "updatedBy": value.updated_by}
 
 
 @app.get("/api/template")
