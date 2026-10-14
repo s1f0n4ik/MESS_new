@@ -1,0 +1,23 @@
+{
+  "name": "postcards-studio-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^6.0.1",
+    "vite": "^8.0.12",
+    "typescript": "^5.9.3",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "pdfjs-dist": "^4.7.76",
+    "@hocuspocus/provider": "^4.0.0",
+    "y-indexeddb": "^9.0.12",
+    "yjs": "^13.6.27"
+  },
+  "devDependencies": {}
+}

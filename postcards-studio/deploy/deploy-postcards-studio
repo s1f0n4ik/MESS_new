@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APP_ROOT=/opt/postcards-studio
+RELEASES_ROOT="$APP_ROOT/releases"
+SHARED_ROOT="$APP_ROOT/shared"
+LOCK_FILE=/run/lock/postcards-studio-deploy.lock
+
+fail() {
+  echo "deploy: $*" >&2
+  exit 1
+}
+
+[[ $# -eq 2 ]] || fail "usage: deploy-postcards-studio ARCHIVE GIT_SHA"
+
+archive=$1
+git_sha=$2
+
+[[ "$git_sha" =~ ^[0-9a-f]{40}$ ]] || fail "invalid git SHA"
+[[ "$archive" == /home/deploy/incoming/"$git_sha".tgz ]] || fail "unexpected archive path"
+[[ -f "$archive" && ! -L "$archive" ]] || fail "release archive does not exist"
+
+exec 9>"$LOCK_FILE"
+flock -n 9 || fail "another deployment is already running"
+
+install -d -m 755 "$RELEASES_ROOT" "$SHARED_ROOT"
+[[ -f "$SHARED_ROOT/.env" ]] || fail "$SHARED_ROOT/.env is missing"
+[[ -f "$SHARED_ROOT/template/Postcards_2x2_template_14_blocks.pdf" ]] || \
+  fail "shared PDF template is missing"
+
+release="$RELEASES_ROOT/$git_sha"
+staging="$RELEASES_ROOT/.${git_sha}.staging"
+
+[[ ! -e "$release" ]] || fail "release $git_sha already exists"
+rm -rf -- "$staging"
+install -d -m 755 "$staging"
+
+cleanup() {
+  rm -rf -- "$staging"
+}
+trap cleanup EXIT
+
+tar -xzf "$archive" -C "$staging" --no-same-owner --no-same-permissions
+[[ -f "$staging/docker-compose.yml" ]] || fail "docker-compose.yml is missing from release"
+[[ -f "$staging/Caddyfile" ]] || fail "Caddyfile is missing from release"
+
+ln -s "$SHARED_ROOT/.env" "$staging/.env"
+ln -s "$SHARED_ROOT/template" "$staging/template"
+
+docker compose -p postcards-studio -f "$staging/docker-compose.yml" config --quiet
+COMPOSE_PARALLEL_LIMIT=1 docker compose -p postcards-studio -f "$staging/docker-compose.yml" build
+
+previous=""
+if [[ -L "$APP_ROOT/current" ]]; then
+  previous=$(readlink -f "$APP_ROOT/current")
+fi
+
+mv -- "$staging" "$release"
+ln -sfn "$release" "$APP_ROOT/.current-next"
+mv -Tf "$APP_ROOT/.current-next" "$APP_ROOT/current"
+
+if ! docker compose -p postcards-studio -f "$release/docker-compose.yml" up -d --remove-orphans; then
+  if [[ -n "$previous" && -f "$previous/docker-compose.yml" ]]; then
+    ln -sfn "$previous" "$APP_ROOT/current"
+    docker compose -p postcards-studio -f "$previous/docker-compose.yml" up -d --remove-orphans || true
+  fi
+  fail "docker compose failed; previous release was restored"
+fi
+
+healthy=false
+for _ in $(seq 1 30); do
+  if docker compose -p postcards-studio -f "$release/docker-compose.yml" \
+      exec -T web wget -qO- http://127.0.0.1/api/health >/dev/null 2>&1; then
+    healthy=true
+    break
+  fi
+  sleep 2
+done
+
+if [[ "$healthy" != true ]]; then
+  if [[ -n "$previous" && -f "$previous/docker-compose.yml" ]]; then
+    ln -sfn "$previous" "$APP_ROOT/.current-next"
+    mv -Tf "$APP_ROOT/.current-next" "$APP_ROOT/current"
+    docker compose -p postcards-studio -f "$previous/docker-compose.yml" up -d --remove-orphans || true
+  fi
+  fail "health check failed; previous release was restored"
+fi
+
+rm -f -- "$archive"
+trap - EXIT
+echo "deploy: release $git_sha is healthy"

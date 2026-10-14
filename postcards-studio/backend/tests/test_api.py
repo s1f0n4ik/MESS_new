@@ -1,0 +1,100 @@
+import hashlib
+import importlib
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+
+import pymupdf as fitz
+from fastapi.testclient import TestClient
+
+
+class StudioApiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory()
+        root = Path(cls.temp.name)
+        template = root / "template.pdf"
+        pdf = fitz.open()
+        for _ in range(28):
+            pdf.new_page(width=1190.55, height=841.89)
+        pdf.save(template)
+        pdf.close()
+        os.environ.update({
+            "STUDIO_STORAGE_DIR": str(root / "data"),
+            "STUDIO_DATABASE_URL": f"sqlite:///{(root / 'studio.db').as_posix()}",
+            "STUDIO_TEMPLATE_PDF": str(template),
+            "STUDIO_SECRET_KEY": "test-secret-longer-than-thirty-two-bytes",
+            "STUDIO_ADMIN_EMAIL": "admin@test.local",
+            "STUDIO_ADMIN_PASSWORD": "very-secure-test-password",
+            "STUDIO_SYNC_TOKEN": "sync-test-token",
+        })
+        from app import config
+        config.settings.cache_clear()
+        from app import main
+        importlib.reload(main)
+        cls.client = TestClient(main.app)
+        cls.client.__enter__()
+        login = cls.client.post("/api/auth/login", json={"email": "admin@test.local",
+                                                          "password": "very-secure-test-password"})
+        assert login.status_code == 200, login.text
+        cls.token = login.json()["token"]
+        cls.headers = {"Authorization": f"Bearer {cls.token}"}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.__exit__(None, None, None)
+        from app.db import engine
+        engine.dispose()
+        cls.temp.cleanup()
+
+    def test_document_conflict_and_publication(self):
+        project = self.client.get("/api/projects/1", headers=self.headers)
+        self.assertEqual(project.status_code, 200)
+        self.assertEqual(len(project.json()["documents"]), 4)
+        body = {"baseRevision": 0, "pages": {"1": [{"id": "hello", "type": "text",
+                 "x": .1, "y": .1, "w": .4, "h": .2, "text": "Привет",
+                 "fontSize": 28, "color": "#111111", "background": "transparent"}]}}
+        saved = self.client.put("/api/projects/1/documents/pdf1", headers=self.headers, json=body)
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(saved.json()["revision"], 1)
+        conflict = self.client.put("/api/projects/1/documents/pdf1", headers=self.headers, json=body)
+        self.assertEqual(conflict.status_code, 409)
+        history = self.client.get("/api/projects/1/documents/pdf1/history", headers=self.headers)
+        self.assertEqual(history.json()[0]["revision"], 1)
+        restored = self.client.post("/api/projects/1/documents/pdf1/history/1/restore",
+                                    headers=self.headers, json={"baseRevision": 1})
+        self.assertEqual(restored.status_code, 200)
+        self.assertEqual(restored.json()["revision"], 2)
+        created = self.client.post("/api/users", headers=self.headers, json={
+            "email": "mediator@test.local", "name": "Медиатор", "password": "mediator-password",
+            "role": "editor",
+        })
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(len(self.client.get("/api/users", headers=self.headers).json()), 2)
+        service_headers = {"X-Collaboration-Secret": "development-collaboration-secret"}
+        collab_auth = self.client.post("/api/internal/collaboration/auth", headers=service_headers,
+                                       json={"token": self.token, "documentName": "project-1-pdf1"})
+        self.assertEqual(collab_auth.status_code, 200, collab_auth.text)
+        self.assertEqual(collab_auth.json()["slot"], "pdf1")
+        collab_snapshot = self.client.post("/api/internal/collaboration/documents/project-1-pdf1",
+                                           headers=service_headers,
+                                           json={"pages": body["pages"], "updatedBy": "admin@test.local"})
+        self.assertEqual(collab_snapshot.status_code, 200, collab_snapshot.text)
+        unauthorized = self.client.get("/api/internal/collaboration/documents/project-1-pdf1")
+        self.assertEqual(unauthorized.status_code, 401)
+        release = self.client.post("/api/projects/1/publish", headers=self.headers)
+        self.assertEqual(release.status_code, 200, release.text)
+        self.assertEqual(len(release.json()["files"]), 4)
+        latest = self.client.get("/api/sync/latest", headers={"X-Sync-Token": "sync-test-token"})
+        self.assertEqual(latest.json()["releaseId"], release.json()["releaseId"])
+        for item in release.json()["files"]:
+            response = self.client.get(f"/api/sync/releases/{release.json()['releaseId']}/{item['name']}",
+                                       headers={"X-Sync-Token": "sync-test-token"})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(hashlib.sha256(response.content).hexdigest(), item["sha256"])
+
+
+if __name__ == "__main__":
+    unittest.main()
