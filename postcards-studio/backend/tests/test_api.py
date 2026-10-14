@@ -138,6 +138,8 @@ class StudioApiTests(unittest.TestCase):
         rendered = fitz.open(output)
         self.assertGreater(len(rendered[0].get_drawings()), 0)
         self.assertNotIn("ORIGINAL TEMPLATE", rendered[0].get_text())
+        self.assertIn("Курсивный текст", rendered[0].get_text().replace("\xa0", " "))
+        self.assertFalse(any(font[3] == "Helvetica" for font in rendered[0].get_fonts(full=True)))
         rendered.close()
 
     def test_collaboration_history_is_throttled_and_document_can_be_exported(self):

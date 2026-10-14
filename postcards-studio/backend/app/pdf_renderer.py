@@ -103,9 +103,11 @@ def render_document(template: Path, content: dict, assets_root: Path, output: Pa
                           "color": _color(item.get("color")), "align": align, "overlay": True}
                 family = item.get("fontFamily", "Arial")
                 font_path = _font_path(family, bool(item.get("bold")), bool(item.get("italic")))
-                if font_path:
-                    variant = f"{family}-{bool(item.get('bold'))}-{bool(item.get('italic'))}".replace(" ", "-")
-                    kwargs.update(fontname=variant, fontfile=str(font_path))
+                if not font_path:
+                    raise RuntimeError(f"Не найден шрифт с поддержкой кириллицы: {family}")
+                variant = f"{family}-{bool(item.get('bold'))}-{bool(item.get('italic'))}".replace(" ", "-")
+                page.insert_font(fontname=variant, fontfile=str(font_path))
+                kwargs.update(fontname=variant)
                 page.insert_textbox(rect, str(item.get("text") or ""), **kwargs)
             elif kind == "shape":
                 stroke = _color(item.get("stroke"))

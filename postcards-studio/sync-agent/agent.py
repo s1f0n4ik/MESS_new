@@ -100,7 +100,8 @@ def main() -> None:
     token_default = os.environ.get("POSTCARDS_SYNC_TOKEN", "")
     destination_default = os.environ.get("POSTCARDS_DESTINATION", "")
     parser.add_argument("--server", default=server_default, required=not server_default)
-    parser.add_argument("--token", default=token_default, required=not token_default)
+    parser.add_argument("--token", default=token_default)
+    parser.add_argument("--token-file", type=Path)
     parser.add_argument("--destination", type=Path,
                         default=Path(destination_default) if destination_default else None,
                         required=not destination_default)
@@ -109,7 +110,12 @@ def main() -> None:
                         help="Локальный Postcards API; пустая строка отключает установку")
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
-    agent = Agent(args.server, args.token, args.destination, args.application)
+    token = args.token
+    if not token and args.token_file:
+        token = args.token_file.read_text("utf-8").strip()
+    if not token:
+        parser.error("задайте --token, --token-file или POSTCARDS_SYNC_TOKEN")
+    agent = Agent(args.server, token, args.destination, args.application)
     if args.once:
         agent.sync_once()
         return
