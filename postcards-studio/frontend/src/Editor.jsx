@@ -201,6 +201,6 @@ export default function Editor({ project, user, onLogout }) {
       {collaboration.ready ? <PdfPages pages={collaboration.pages} selected={selected} onSelect={select} onChange={change} /> : <div className="empty-state">Подключаем совместный документ…</div>}
     </main>
     {history && <div className="dialog-backdrop" onMouseDown={() => setHistory(null)}><section className="dialog history-dialog" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>История документа</h2><p>Восстановление станет общим для всех медиаторов</p></div><button onClick={() => setHistory(null)}>Закрыть</button></header><div className="history-list">{history.length ? history.map((entry) => <button key={entry.revision} onClick={() => restore(entry.revision)}><b>Версия {entry.revision}</b><span>{new Date(entry.createdAt).toLocaleString('ru-RU')}</span><small>{entry.createdBy}</small></button>) : <p>Сохранённых версий пока нет.</p>}</div></section></div>}
-    {usersOpen && <UserDialog onClose={() => setUsersOpen(false)} />}
+    {usersOpen && <UserDialog currentUser={user} onClose={() => setUsersOpen(false)} />}
   </div>
 }

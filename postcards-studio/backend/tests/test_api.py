@@ -74,6 +74,16 @@ class StudioApiTests(unittest.TestCase):
         })
         self.assertEqual(created.status_code, 200)
         self.assertEqual(len(self.client.get("/api/users", headers=self.headers).json()), 2)
+        mediator_login = self.client.post("/api/auth/login", json={
+            "email": "mediator@test.local", "password": "mediator-password",
+        })
+        self.assertEqual(mediator_login.status_code, 200)
+        mediator_headers = {"Authorization": f"Bearer {mediator_login.json()['token']}"}
+        forbidden = self.client.delete(f"/api/users/{created.json()['id']}", headers=mediator_headers)
+        self.assertEqual(forbidden.status_code, 403)
+        current_id = self.client.get("/api/me", headers=self.headers).json()["id"]
+        self_delete = self.client.delete(f"/api/users/{current_id}", headers=self.headers)
+        self.assertEqual(self_delete.status_code, 409)
         service_headers = {"X-Collaboration-Secret": "development-collaboration-secret"}
         collab_auth = self.client.post("/api/internal/collaboration/auth", headers=service_headers,
                                        json={"token": self.token, "documentName": "project-1-pdf1"})
@@ -85,6 +95,12 @@ class StudioApiTests(unittest.TestCase):
         self.assertEqual(collab_snapshot.status_code, 200, collab_snapshot.text)
         unauthorized = self.client.get("/api/internal/collaboration/documents/project-1-pdf1")
         self.assertEqual(unauthorized.status_code, 401)
+        deleted = self.client.delete(f"/api/users/{created.json()['id']}", headers=self.headers)
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(deleted.json()["deleted"], created.json()["id"])
+        self.assertEqual(len(self.client.get("/api/users", headers=self.headers).json()), 1)
+        revoked = self.client.get("/api/me", headers=mediator_headers)
+        self.assertEqual(revoked.status_code, 401)
         release = self.client.post("/api/projects/1/publish", headers=self.headers)
         self.assertEqual(release.status_code, 200, release.text)
         self.assertEqual(len(release.json()["files"]), 4)

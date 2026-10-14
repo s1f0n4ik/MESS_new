@@ -210,6 +210,27 @@ def users(admin: User = Depends(current_user), db: Session = Depends(session_sco
     return [user_view(value) for value in db.scalars(select(User).order_by(User.name, User.email)).all()]
 
 
+@app.delete("/api/users/{user_id}")
+def delete_user(user_id: int, admin: User = Depends(current_user),
+                db: Session = Depends(session_scope)):
+    if admin.role != "admin":
+        raise HTTPException(403, "Только администратор удаляет пользователей")
+    value = db.get(User, user_id)
+    if not value:
+        raise HTTPException(404, "Пользователь не найден")
+    if value.id == admin.id:
+        raise HTTPException(409, "Нельзя удалить собственную учётную запись")
+    if value.email == cfg.admin_email.strip().lower():
+        raise HTTPException(409, "Нельзя удалить основного администратора")
+    if value.role == "admin":
+        admins = db.scalar(select(func.count(User.id)).where(User.role == "admin")) or 0
+        if admins <= 1:
+            raise HTTPException(409, "Нельзя удалить последнего администратора")
+    db.delete(value)
+    db.commit()
+    return {"deleted": user_id}
+
+
 @app.get("/api/projects")
 def projects(user: User = Depends(current_user), db: Session = Depends(session_scope)):
     del user
