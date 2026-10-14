@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, websocketUrl } from './api'
+import { api, downloadFile, websocketUrl } from './api'
 import { useCollaboration } from './collaboration'
 import PdfPages from './PdfPages'
 import UserDialog from './UserDialog'
@@ -13,6 +13,7 @@ export default function Editor({ project, user, onLogout }) {
   const [activePage, setActivePage] = useState(1)
   const [error, setError] = useState('')
   const [publishing, setPublishing] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [lastRelease, setLastRelease] = useState(null)
   const [history, setHistory] = useState(null)
   const [usersOpen, setUsersOpen] = useState(false)
@@ -114,12 +115,25 @@ export default function Editor({ project, user, onLogout }) {
     setPublishing(true); setError('')
     try {
       const saved = await api(`/api/projects/${project.id}/documents/${slot}/collaboration-snapshot`, {
-        method: 'POST', body: JSON.stringify({ pages: collaboration.snapshot() }),
+        method: 'POST', body: JSON.stringify({ pages: collaboration.snapshot(), checkpoint: true }),
       })
       setRevision(saved.revision)
       const value = await api(`/api/projects/${project.id}/publish`, { method: 'POST' })
       setLastRelease(value)
     } catch (reason) { setError(reason.message) } finally { setPublishing(false) }
+  }
+
+  const exportPdf = async () => {
+    setExporting(true); setError('')
+    try {
+      const saved = await api(`/api/projects/${project.id}/documents/${slot}/collaboration-snapshot`, {
+        method: 'POST', body: JSON.stringify({ pages: collaboration.snapshot(), checkpoint: true }),
+      })
+      setRevision(saved.revision)
+      const title = project.documents.find((value) => value.slot === slot)?.title || slot
+      const safeTitle = title.replace(/[\\/:*?"<>|]+/g, '-').trim() || slot
+      await downloadFile(`/api/projects/${project.id}/documents/${slot}/export.pdf`, `${safeTitle}.pdf`)
+    } catch (reason) { setError(reason.message) } finally { setExporting(false) }
   }
 
   const openHistory = async () => {
@@ -169,6 +183,7 @@ export default function Editor({ project, user, onLogout }) {
         </select>
         {pageBackground && <label className="page-color" title="Цвет чистой страницы">Фон <input type="color" value={pageBackground.color || '#ffffff'} onChange={(event) => change(activePage, pageBackground.id, { color: event.target.value })} /></label>}
         <button onClick={openHistory}>История</button>
+        <button onClick={exportPdf} disabled={exporting || !collaboration.ready}>{exporting ? 'Готовим PDF…' : 'Скачать PDF'}</button>
         {(user.role === 'publisher' || user.role === 'admin') && <button className="primary" onClick={publish} disabled={publishing || !collaboration.ready}>{publishing ? 'Собираем PDF…' : 'Опубликовать'}</button>}
         <span className="toolbar-spacer" /><span className={`status ${collaboration.status.includes('Офлайн') ? 'dirty' : ''}`}>{collaboration.status}</span>
       </div>

@@ -23,6 +23,26 @@ export async function api(path, options = {}) {
   return value
 }
 
+export async function downloadFile(path, filename) {
+  const headers = new Headers()
+  if (session.token) headers.set('Authorization', `Bearer ${session.token}`)
+  const response = await fetch(path, { headers })
+  if (!response.ok) {
+    const type = response.headers.get('content-type') || ''
+    const value = type.includes('json') ? await response.json() : await response.text()
+    const detail = typeof value === 'object' ? value.detail : value
+    throw new Error((typeof detail === 'object' ? detail.message : detail) || `HTTP ${response.status}`)
+  }
+  const url = URL.createObjectURL(await response.blob())
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 export function authHeaders() {
   return session.token ? { Authorization: `Bearer ${session.token}` } : {}
 }

@@ -6,19 +6,20 @@ import re
 import shutil
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import settings
 from .db import Document, DocumentRevision, Project, Release, SessionLocal, User, init_db, session_scope
-from .pdf_renderer import publish_release
+from .pdf_renderer import publish_release, render_document
 from .schemas import (CollaborationAuthBody, CollaborationSnapshotBody, CreateUserBody,
                       LoginBody, RestoreBody, SaveDocumentBody)
 from .security import (current_user, decode_token, hash_password, make_token, publisher,
@@ -269,20 +270,45 @@ def require_collaboration_service(x_collaboration_secret: str = Header(default="
         raise HTTPException(401, "Недействительный служебный токен")
 
 
+def history_checkpoint_due(document: Document, db: Session) -> bool:
+    latest = db.scalar(select(DocumentRevision).where(DocumentRevision.document_id == document.id)
+                       .order_by(DocumentRevision.created_at.desc()).limit(1))
+    if not latest:
+        return True
+    created_at = latest.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return now() - created_at >= timedelta(minutes=max(1, cfg.history_interval_minutes))
+
+
+def add_history_checkpoint(document: Document, updated_by: str, db: Session) -> None:
+    existing = db.scalar(select(DocumentRevision.id).where(
+        DocumentRevision.document_id == document.id,
+        DocumentRevision.revision == document.revision,
+    ))
+    if not existing:
+        db.add(DocumentRevision(document_id=document.id, revision=document.revision,
+                                content_json=document.content_json, created_by=updated_by))
+
+
 async def store_collaboration_snapshot(document: Document, pages_value: dict, updated_by: str,
-                                       db: Session) -> dict:
+                                       db: Session, checkpoint: bool = False) -> dict:
     pages = clean_pages(pages_value)
     payload = json.dumps({"pages": pages}, ensure_ascii=False, separators=(",", ":"))
     if len(payload.encode("utf-8")) > 4 * 1024 * 1024:
         raise HTTPException(413, "Документ слишком большой")
     if payload == document.content_json:
+        if checkpoint:
+            add_history_checkpoint(document, updated_by, db)
+            db.commit()
         return document_view(document)
+    make_checkpoint = checkpoint or history_checkpoint_due(document, db)
     document.revision += 1
     document.content_json = payload
     document.updated_at = now()
     document.updated_by = updated_by
-    db.add(DocumentRevision(document_id=document.id, revision=document.revision,
-                            content_json=payload, created_by=updated_by))
+    if make_checkpoint:
+        add_history_checkpoint(document, updated_by, db)
     db.commit()
     await hub.publish(document.project_id, {"type": "document.saved", "slot": document.slot,
                                             "revision": document.revision, "updatedBy": updated_by})
@@ -319,7 +345,8 @@ async def collaboration_store(document_name: str, body: CollaborationSnapshotBod
     del access
     project_id, slot = parse_collaboration_name(document_name)
     document = find_document(db, project_id, slot)
-    return await store_collaboration_snapshot(document, body.pages, body.updatedBy or "collaboration", db)
+    return await store_collaboration_snapshot(document, body.pages, body.updatedBy or "collaboration", db,
+                                              checkpoint=body.checkpoint)
 
 
 @app.post("/api/projects/{project_id}/documents/{slot}/collaboration-snapshot")
@@ -327,7 +354,8 @@ async def collaboration_client_snapshot(project_id: int, slot: str, body: Collab
                                         user: User = Depends(current_user),
                                         db: Session = Depends(session_scope)):
     document = find_document(db, project_id, slot)
-    return await store_collaboration_snapshot(document, body.pages, user.email, db)
+    return await store_collaboration_snapshot(document, body.pages, user.email, db,
+                                              checkpoint=body.checkpoint)
 
 
 @app.get("/api/projects/{project_id}/documents/{slot}")
@@ -367,9 +395,19 @@ def history(project_id: int, slot: str, user: User = Depends(current_user),
     del user
     document = find_document(db, project_id, slot)
     values = db.scalars(select(DocumentRevision).where(DocumentRevision.document_id == document.id)
-                        .order_by(DocumentRevision.revision.desc()).limit(200)).all()
+                        .order_by(DocumentRevision.created_at.desc()).limit(2000)).all()
+    selected = []
+    interval = timedelta(minutes=max(1, cfg.history_interval_minutes))
+    for item in values:
+        item_time = item.created_at.replace(tzinfo=timezone.utc) if item.created_at.tzinfo is None else item.created_at
+        previous_time = None if not selected else (selected[-1].created_at.replace(tzinfo=timezone.utc)
+                                                    if selected[-1].created_at.tzinfo is None else selected[-1].created_at)
+        if previous_time is None or previous_time - item_time >= interval:
+            selected.append(item)
+        if len(selected) >= max(1, cfg.history_limit):
+            break
     return [{"revision": item.revision, "createdAt": iso(item.created_at), "createdBy": item.created_by}
-            for item in values]
+            for item in selected]
 
 
 @app.get("/api/projects/{project_id}/documents/{slot}/history/{revision}")
@@ -434,6 +472,20 @@ def template(user: User = Depends(current_user)):
     if not cfg.template_pdf.is_file():
         raise HTTPException(503, f"Шаблон не найден: {cfg.template_pdf}")
     return FileResponse(cfg.template_pdf, media_type="application/pdf", filename="Postcards-template.pdf")
+
+
+@app.get("/api/projects/{project_id}/documents/{slot}/export.pdf")
+def export_document(project_id: int, slot: str, user: User = Depends(current_user),
+                    db: Session = Depends(session_scope)):
+    del user
+    document = find_document(db, project_id, slot)
+    export_dir = cfg.storage_dir / "exports"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    target = export_dir / f"{uuid.uuid4().hex}.pdf"
+    render_document(cfg.template_pdf, json.loads(document.content_json), assets_root, target)
+    filename = f"{slot}-{document.revision}.pdf"
+    return FileResponse(target, media_type="application/pdf", filename=filename,
+                        background=BackgroundTask(target.unlink, missing_ok=True))
 
 
 @app.post("/api/projects/{project_id}/publish")

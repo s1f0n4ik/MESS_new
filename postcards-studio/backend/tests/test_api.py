@@ -140,6 +140,35 @@ class StudioApiTests(unittest.TestCase):
         self.assertNotIn("ORIGINAL TEMPLATE", rendered[0].get_text())
         rendered.close()
 
+    def test_collaboration_history_is_throttled_and_document_can_be_exported(self):
+        first_pages = {"1": [{"id": "first", "type": "text", "x": .1, "y": .1,
+                               "w": .4, "h": .2, "text": "Первая версия", "fontSize": 24,
+                               "color": "#111111", "background": "transparent"}]}
+        second_pages = {"1": [{**first_pages["1"][0], "text": "Вторая версия"}]}
+        first = self.client.post("/api/projects/1/documents/pdf2/collaboration-snapshot",
+                                 headers=self.headers, json={"pages": first_pages})
+        second = self.client.post("/api/projects/1/documents/pdf2/collaboration-snapshot",
+                                  headers=self.headers, json={"pages": second_pages})
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertGreater(second.json()["revision"], first.json()["revision"])
+        history = self.client.get("/api/projects/1/documents/pdf2/history", headers=self.headers)
+        self.assertEqual(len(history.json()), 1)
+        checkpoint = self.client.post("/api/projects/1/documents/pdf2/collaboration-snapshot",
+                                      headers=self.headers,
+                                      json={"pages": second_pages, "checkpoint": True})
+        self.assertEqual(checkpoint.status_code, 200)
+        history = self.client.get("/api/projects/1/documents/pdf2/history", headers=self.headers)
+        self.assertEqual(history.json()[0]["revision"], checkpoint.json()["revision"])
+
+        exported = self.client.get("/api/projects/1/documents/pdf2/export.pdf", headers=self.headers)
+        self.assertEqual(exported.status_code, 200, exported.text)
+        self.assertEqual(exported.headers["content-type"], "application/pdf")
+        result = fitz.open(stream=exported.content, filetype="pdf")
+        self.assertEqual(len(result), 28)
+        self.assertIn("Вторая версия", result[0].get_text().replace("\xa0", " "))
+        result.close()
+
 
 if __name__ == "__main__":
     unittest.main()

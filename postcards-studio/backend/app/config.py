@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     collaboration_secret: str = "development-collaboration-secret"
     public_url: str = "http://localhost:8080"
     token_hours: int = 24
+    history_interval_minutes: int = 15
+    history_limit: int = 50
     environment: str = "development"
 
     def validate_runtime(self) -> None:

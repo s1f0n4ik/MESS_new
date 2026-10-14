@@ -39,3 +39,4 @@ class CollaborationAuthBody(BaseModel):
 class CollaborationSnapshotBody(BaseModel):
     pages: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     updatedBy: str | None = None
+    checkpoint: bool = False

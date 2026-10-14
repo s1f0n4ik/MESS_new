@@ -96,11 +96,16 @@ class Agent:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Postcards Studio NAS sync agent")
-    parser.add_argument("--server", required=True)
-    parser.add_argument("--token", required=True)
-    parser.add_argument("--destination", type=Path, required=True)
-    parser.add_argument("--interval", type=float, default=30)
-    parser.add_argument("--application", default="http://127.0.0.1:8787",
+    server_default = os.environ.get("POSTCARDS_SERVER", "")
+    token_default = os.environ.get("POSTCARDS_SYNC_TOKEN", "")
+    destination_default = os.environ.get("POSTCARDS_DESTINATION", "")
+    parser.add_argument("--server", default=server_default, required=not server_default)
+    parser.add_argument("--token", default=token_default, required=not token_default)
+    parser.add_argument("--destination", type=Path,
+                        default=Path(destination_default) if destination_default else None,
+                        required=not destination_default)
+    parser.add_argument("--interval", type=float, default=float(os.environ.get("POSTCARDS_INTERVAL", "30")))
+    parser.add_argument("--application", default=os.environ.get("POSTCARDS_APPLICATION", "http://127.0.0.1:8787"),
                         help="Локальный Postcards API; пустая строка отключает установку")
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
