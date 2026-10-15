@@ -100,6 +100,7 @@ function MainApp() {
   const adminAllowed = new URLSearchParams(window.location.search).has('admin')
   const [menuOpen, setMenuOpen] = useState(false)
   const [logOpen, setLogOpen] = useState(false)
+  const [libraryEditorOpen, setLibraryEditorOpen] = useState(false)
 
   useEffect(() => {
     if (!adminAllowed) return
