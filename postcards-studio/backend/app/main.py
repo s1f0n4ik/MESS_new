@@ -126,7 +126,7 @@ def clean_pages(raw_pages: dict) -> dict:
                             fontFamily=raw.get("fontFamily") if raw.get("fontFamily") in {"Arial", "Georgia", "Courier New", "Times New Roman"} else "Times New Roman",
                             color=str(raw.get("color") or "#111111")[:32],
                             background=str(raw.get("background") or "transparent")[:32],
-                            align=raw.get("align") if raw.get("align") in {"left", "center", "right"} else "left",
+                            align=raw.get("align") if raw.get("align") in {"left", "center", "right", "justify"} else "left",
                             bold=bool(raw.get("bold")), italic=bool(raw.get("italic")))
             elif item["type"] == "image":
                 source = str(raw.get("src") or "")

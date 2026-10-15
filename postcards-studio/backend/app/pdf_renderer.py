@@ -104,7 +104,7 @@ def render_document(template: Path, content: dict, assets_root: Path, output: Pa
                 background = item.get("background")
                 if background and background != "transparent":
                     page.draw_rect(rect, color=None, fill=_color(background, (1, 1, 1)), overlay=True)
-                align = {"left": 0, "center": 1, "right": 2}.get(item.get("align"), 0)
+                align = {"left": 0, "center": 1, "right": 2, "justify": 3}.get(item.get("align"), 0)
                 kwargs = {"fontsize": max(6, min(240, float(item.get("fontSize", 28)))),
                           "color": _color(item.get("color")), "align": align, "overlay": True}
                 family = item.get("fontFamily", "Arial")

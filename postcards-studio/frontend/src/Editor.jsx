@@ -12,23 +12,28 @@ function editableLayout(pageCount = 28) {
   for (let page = 1; page <= pageCount; page += 1) {
     const items = [{ id: `background-${page}`, type: 'page-background', x: 0, y: 0, w: 1, h: 1, color: '#ffffff', locked: true }]
     for (let column = 0; column < 2; column += 1) {
-      const cardIndex = (page - 1) * 2 + column + 1
-      const x = column ? .515 : .03
+      const cardIndex = Math.floor((page - 1) / 2) * 2 + column + 1
+      const x = column ? .510 : .018
       items.push(
-        { id: `outline-${page}-${column}`, type: 'shape', shape: 'rectangle', x, y: .035, w: .455, h: .93,
+        { id: `outline-${page}-${column}`, type: 'shape', shape: 'rectangle', x, y: .032, w: .472, h: .936,
           fill: 'transparent', stroke: '#777777', strokeWidth: 1, strokeStyle: 'dotted', locked: true, role: 'outline', cardIndex },
-        { id: `scan-${page}-${column}`, type: 'image', x: x + .04, y: .06, w: .375, h: .27, src: '', fit: 'contain',
-          locked: true, role: 'scan', sequence: cardIndex, cardIndex },
-        { id: `caption-${page}-${column}`, type: 'text', x: x + .02, y: .345, w: .415, h: .075, text: '',
-          placeholder: 'Подпись под изображением', fontSize: 12, fontFamily: 'Times New Roman', color: '#111111',
-          background: 'transparent', align: 'right', bold: false, italic: false, locked: true, role: 'caption', cardIndex },
-        { id: `body-${page}-${column}`, type: 'text', x: x + .02, y: .43, w: .415, h: .515, text: '',
-          placeholder: 'Текст экфрасиса и экспликации', fontSize: 18, fontFamily: 'Times New Roman', color: '#111111',
-          background: 'transparent', align: 'left', bold: false, italic: false, locked: true, role: 'body', cardIndex },
       )
+      if (page % 2) items.push(
+        { id: `scan-${page}-${column}`, type: 'image', x: x + .058, y: .034, w: .358, h: .337, src: '', fit: 'contain',
+          locked: true, role: 'scan', sequence: cardIndex, cardIndex },
+        { id: `caption-${page}-${column}`, type: 'text', x: x + .005, y: .395, w: .462, h: .085, text: '',
+          placeholder: 'Подпись под изображением', fontSize: 16, fontFamily: 'Times New Roman', color: '#111111',
+          background: 'transparent', align: 'right', bold: false, italic: false, locked: true, role: 'caption', cardIndex },
+        { id: `body-${page}-${column}`, type: 'text', x: x + .005, y: .485, w: .462, h: .477, text: '',
+          placeholder: 'Текст', fontSize: 15, fontFamily: 'Times New Roman', color: '#111111',
+          background: 'transparent', align: 'justify', bold: false, italic: false, locked: true, role: 'body', cardIndex },
+      )
+      else items.push({ id: `body-${page}-${column}`, type: 'text', x: x + .005, y: .025, w: .462, h: .935, text: '',
+        placeholder: 'Продолжение текста', fontSize: 15, fontFamily: 'Times New Roman', color: '#111111',
+        background: 'transparent', align: 'justify', bold: false, italic: false, locked: true, role: 'body', cardIndex })
     }
-    items.push({ id: `divider-${page}`, type: 'shape', shape: 'line', x: .5, y: .025, w: .002, h: .95,
-      fill: 'transparent', stroke: '#333333', strokeWidth: 2, strokeStyle: 'solid', locked: true, role: 'divider' })
+    items.push({ id: `divider-${page}`, type: 'shape', shape: 'rectangle', x: .499, y: .025, w: .002, h: .95,
+      fill: '#333333', stroke: '#333333', strokeWidth: 1, strokeStyle: 'solid', locked: true, role: 'divider' })
     pages[page] = items
   }
   return pages
@@ -276,7 +281,7 @@ export default function Editor({ project, user, onLogout }) {
           <label title="Цвет текста">Текст<input type="color" value={item.color} onChange={(event) => change(selected.page, item.id, { color: event.target.value })} /></label>
           <button className={item.bold ? 'active-tool' : ''} onClick={() => change(selected.page, item.id, { bold: !item.bold })}><b>Ж</b></button>
           <button className={item.italic ? 'active-tool' : ''} onClick={() => change(selected.page, item.id, { italic: !item.italic })}><i>К</i></button>
-          <label>Выравнивание<select value={item.align || 'left'} onChange={(event) => change(selected.page, item.id, { align: event.target.value })}><option value="left">Слева</option><option value="center">По центру</option><option value="right">Справа</option></select></label>
+          <label>Выравнивание<select value={item.align || 'left'} onChange={(event) => change(selected.page, item.id, { align: event.target.value })}><option value="left">Слева</option><option value="center">По центру</option><option value="right">Справа</option><option value="justify">По ширине</option></select></label>
           <label title="Фон текстового блока">Подложка<input type="color" value={item.background === 'transparent' ? '#ffffff' : item.background} onChange={(event) => change(selected.page, item.id, { background: event.target.value })} /></label>
           <button onClick={() => change(selected.page, item.id, { background: 'transparent' })}>Без подложки</button>
         </>}

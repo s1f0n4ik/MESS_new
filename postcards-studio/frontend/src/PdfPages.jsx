@@ -57,7 +57,7 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
             onChange={(e) => onChange(number, item.id, { text: e.target.value })}
             style={{ fontSize: `${Math.max(10, item.fontSize * .55)}px`, color: item.color, background: item.background,
                      fontFamily: item.fontFamily || 'Times New Roman, serif', fontWeight: item.bold ? 700 : 400,
-                     fontStyle: item.italic ? 'italic' : 'normal', textAlign: item.align }} />}
+                     fontStyle: item.italic ? 'italic' : 'normal', textAlign: item.align === 'justify' ? 'justify' : item.align }} />}
           {item.type === 'image' && (item.src
             ? <img src={item.src} draggable="false" style={{ objectFit: item.fit || 'contain' }} />
             : <div className="image-placeholder"><b>Изображение {item.sequence || item.cardIndex || ''}</b><span>Выберите слот и загрузите файл</span></div>)}
