@@ -41,6 +41,7 @@ function editableLayout(pageCount = 28) {
 
 export default function Editor({ project, user, onLogout }) {
   const [slot, setSlot] = useState('pdf1')
+  const [documents, setDocuments] = useState(project.documents)
   const [selected, setSelected] = useState(null)
   const [activePage, setActivePage] = useState(1)
   const [error, setError] = useState('')
@@ -57,8 +58,12 @@ export default function Editor({ project, user, onLogout }) {
   const collaboration = useCollaboration(project.id, slot, user)
 
   useEffect(() => {
-    setSelected(null); setError(''); setRevision(project.documents.find((value) => value.slot === slot)?.revision || 0)
-  }, [project.documents, slot])
+    setDocuments(project.documents)
+  }, [project.documents])
+
+  useEffect(() => {
+    setSelected(null); setError(''); setRevision(documents.find((value) => value.slot === slot)?.revision || 0)
+  }, [documents, slot])
 
   useEffect(() => {
     const socket = new WebSocket(websocketUrl(project.id))
@@ -66,6 +71,9 @@ export default function Editor({ project, user, onLogout }) {
     socket.onmessage = (event) => {
       const message = JSON.parse(event.data)
       if (message.type === 'document.saved' && message.slot === slot) setRevision(message.revision)
+      if (message.type === 'document.renamed') setDocuments((current) => current.map((entry) => (
+        entry.slot === message.slot ? { ...entry, title: message.title, updatedBy: message.updatedBy } : entry
+      )))
       if (message.type === 'release.published') setLastRelease(message.release)
     }
     return () => socket.close()
@@ -211,10 +219,24 @@ export default function Editor({ project, user, onLogout }) {
         method: 'POST', body: JSON.stringify({ pages: collaboration.snapshot(), checkpoint: true }),
       })
       setRevision(saved.revision)
-      const title = project.documents.find((value) => value.slot === slot)?.title || slot
+      const title = documents.find((value) => value.slot === slot)?.title || slot
       const safeTitle = title.replace(/[\\/:*?"<>|]+/g, '-').trim() || slot
       await downloadFile(`/api/projects/${project.id}/documents/${slot}/export.pdf`, `${safeTitle}.pdf`)
     } catch (reason) { setError(reason.message) } finally { setExporting(false) }
+  }
+
+  const renameDocument = async (entry) => {
+    const value = window.prompt('Новое название документа', entry.title)
+    if (value === null) return
+    const title = value.trim().replace(/\s+/g, ' ')
+    if (!title || title === entry.title) return
+    try {
+      const renamed = await api(`/api/projects/${project.id}/documents/${entry.slot}/title`, {
+        method: 'PATCH', body: JSON.stringify({ title }),
+      })
+      setDocuments((current) => current.map((item) => item.slot === entry.slot ? { ...item, ...renamed } : item))
+      setNotice(`Документ переименован: ${renamed.title}`)
+    } catch (reason) { setError(reason.message) }
   }
 
   const openHistory = async () => {
@@ -238,8 +260,14 @@ export default function Editor({ project, user, onLogout }) {
     </div></header>
     <aside className="sidebar">
       <h2>Документы</h2>
-      {project.documents.map((entry) => <button key={entry.slot} className={slot === entry.slot ? 'active' : ''}
-        onClick={() => setSlot(entry.slot)}><b>{entry.title}</b><small>{slot === entry.slot ? `Версия ${revision} · совместно` : `Версия ${entry.revision}`}</small></button>)}
+      {documents.map((entry) => <div key={entry.slot} className={`document-nav ${slot === entry.slot ? 'active' : ''}`}>
+        <button className="document-select" onClick={() => setSlot(entry.slot)}>
+          <b>{entry.title}</b><small>{slot === entry.slot ? `Версия ${revision} · совместно` : `Версия ${entry.revision}`}</small>
+        </button>
+        {(user.role === 'publisher' || user.role === 'admin') && <button className="document-rename"
+          aria-label={`Переименовать ${entry.title}`} title="Переименовать"
+          onClick={() => renameDocument(entry)}>✎</button>}
+      </div>)}
       <div className="publish-card"><b>Публикация</b><p>В приложение попадает только опубликованный комплект.</p>
         {(user.role === 'publisher' || user.role === 'admin') && <button className="primary" onClick={publish} disabled={publishing || !collaboration.ready}>{publishing ? 'Собираем PDF…' : 'Опубликовать 4 PDF'}</button>}
         {lastRelease && <small>Последний релиз: {lastRelease.releaseId}</small>}</div>

@@ -26,7 +26,8 @@ from .db import (Document, DocumentRevision, DocumentTemplate, Project, Release,
                  SessionLocal, User, init_db, session_scope)
 from .pdf_renderer import publish_release, render_document
 from .schemas import (CollaborationAuthBody, CollaborationSnapshotBody, CreateUserBody,
-                      LoginBody, RestoreBody, SaveDocumentBody, SaveTemplateBody)
+                      LoginBody, RenameDocumentBody, RestoreBody, SaveDocumentBody,
+                      SaveTemplateBody)
 from .security import (current_user, decode_token, hash_password, make_token, publisher,
                        sync_access, verify_password)
 
@@ -382,6 +383,23 @@ def get_document(project_id: int, slot: str, user: User = Depends(current_user),
                  db: Session = Depends(session_scope)):
     del user
     return document_view(find_document(db, project_id, slot))
+
+
+@app.patch("/api/projects/{project_id}/documents/{slot}/title")
+async def rename_document(project_id: int, slot: str, body: RenameDocumentBody,
+                          user: User = Depends(publisher), db: Session = Depends(session_scope)):
+    document = find_document(db, project_id, slot)
+    title = " ".join(body.title.split())
+    if not title:
+        raise HTTPException(422, "Название не может быть пустым")
+    document.title = title
+    document.updated_at = now()
+    document.updated_by = user.email
+    db.commit()
+    result = document_view(document)
+    await hub.publish(project_id, {"type": "document.renamed", "slot": slot,
+                                   "title": title, "updatedBy": user.email})
+    return result
 
 
 @app.put("/api/projects/{project_id}/documents/{slot}")

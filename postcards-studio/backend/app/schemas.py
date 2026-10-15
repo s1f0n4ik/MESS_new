@@ -20,6 +20,10 @@ class SaveDocumentBody(BaseModel):
     pages: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
 
 
+class RenameDocumentBody(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+
+
 class CreateUserBody(BaseModel):
     email: str
     name: str

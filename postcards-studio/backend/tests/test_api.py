@@ -82,6 +82,15 @@ class StudioApiTests(unittest.TestCase):
         })
         self.assertEqual(mediator_login.status_code, 200)
         mediator_headers = {"Authorization": f"Bearer {mediator_login.json()['token']}"}
+        renamed = self.client.patch("/api/projects/1/documents/pdf1/title", headers=self.headers,
+                                    json={"title": "  Экфрасисы выставки  "})
+        self.assertEqual(renamed.status_code, 200, renamed.text)
+        self.assertEqual(renamed.json()["title"], "Экфрасисы выставки")
+        project_after_rename = self.client.get("/api/projects/1", headers=self.headers).json()
+        self.assertEqual(project_after_rename["documents"][0]["title"], "Экфрасисы выставки")
+        forbidden_rename = self.client.patch("/api/projects/1/documents/pdf1/title",
+                                             headers=mediator_headers, json={"title": "Нельзя"})
+        self.assertEqual(forbidden_rename.status_code, 403)
         forbidden = self.client.delete(f"/api/users/{created.json()['id']}", headers=mediator_headers)
         self.assertEqual(forbidden.status_code, 403)
         current_id = self.client.get("/api/me", headers=self.headers).json()["id"]
