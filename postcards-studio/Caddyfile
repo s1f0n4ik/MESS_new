@@ -1,0 +1,15 @@
+www.mess-studio.ru {
+  redir https://mess-studio.ru{uri} permanent
+}
+
+mess-studio.ru {
+  encode zstd gzip
+  reverse_proxy web:80
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    -Server
+  }
+}

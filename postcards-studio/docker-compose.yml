@@ -1,0 +1,71 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: postcards
+      POSTGRES_USER: postcards
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postcards-local}
+    volumes:
+      - studio-db:/var/lib/postgresql/data
+
+  api:
+    build: ./backend
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      STUDIO_ENVIRONMENT: production
+      STUDIO_DATABASE_URL: postgresql+psycopg://postcards:${POSTGRES_PASSWORD:-postcards-local}@db:5432/postcards
+      STUDIO_STORAGE_DIR: /data
+      STUDIO_TEMPLATE_PDF: /template/Postcards_2x2_template_14_blocks.pdf
+    volumes:
+      - studio-data:/data
+      - ./template/Postcards_2x2_template_14_blocks.pdf:/template/Postcards_2x2_template_14_blocks.pdf:ro
+    depends_on:
+      - db
+
+  collaboration:
+    build: ./collaboration
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      STUDIO_API_URL: http://api:8081
+      COLLABORATION_DATA_DIR: /data
+    volumes:
+      - studio-collaboration:/data
+    depends_on:
+      - api
+
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    expose:
+      - "80"
+    depends_on:
+      - api
+      - collaboration
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - web
+
+volumes:
+  studio-db:
+  studio-data:
+  studio-collaboration:
+  caddy-data:
+  caddy-config:

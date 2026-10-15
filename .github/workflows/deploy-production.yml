@@ -1,0 +1,104 @@
+name: Test and deploy Postcards Studio
+
+on:
+  push:
+    branches:
+      - production
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: postcards-studio-production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: postcards-studio
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: postcards-studio/backend/requirements.txt
+
+      - name: Test API
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt
+          cd backend
+          python -m unittest discover -s tests -v
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            postcards-studio/collaboration/package-lock.json
+            postcards-studio/frontend/package-lock.json
+
+      - name: Test collaboration service
+        run: |
+          cd collaboration
+          npm ci
+          npm test
+
+      - name: Build web interface
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+  deploy:
+    name: Deploy to production
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_HOST: 194.67.66.244
+      DEPLOY_USER: deploy
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Create release archive
+        run: |
+          tar \
+            --exclude='.env' \
+            --exclude='template' \
+            --exclude='data' \
+            --exclude='node_modules' \
+            --exclude='dist' \
+            --exclude='.venv' \
+            --exclude='__pycache__' \
+            -C postcards-studio \
+            -czf "postcards-studio-${GITHUB_SHA}.tgz" .
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          test -n "$DEPLOY_SSH_KEY"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          install -m 600 .github/deploy_known_hosts ~/.ssh/known_hosts
+
+      - name: Upload and activate release
+        run: |
+          archive="postcards-studio-${GITHUB_SHA}.tgz"
+          remote_archive="/home/${DEPLOY_USER}/incoming/${GITHUB_SHA}.tgz"
+          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" "install -d -m 700 /home/${DEPLOY_USER}/incoming"
+          scp "$archive" "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_archive}"
+          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "sudo /usr/local/sbin/deploy-postcards-studio '${remote_archive}' '${GITHUB_SHA}'"

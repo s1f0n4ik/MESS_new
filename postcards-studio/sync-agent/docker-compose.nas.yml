@@ -1,0 +1,15 @@
+services:
+  postcards-sync:
+    build: .
+    container_name: postcards-studio-sync
+    restart: unless-stopped
+    environment:
+      POSTCARDS_SERVER: ${POSTCARDS_SERVER:-https://mess-studio.ru}
+      POSTCARDS_SYNC_TOKEN: ${POSTCARDS_SYNC_TOKEN:?Set POSTCARDS_SYNC_TOKEN in nas.env}
+      POSTCARDS_DESTINATION: /releases
+      POSTCARDS_APPLICATION: ""
+      POSTCARDS_INTERVAL: ${POSTCARDS_INTERVAL:-30}
+    volumes:
+      - type: bind
+        source: ${NAS_POSTCARDS_PATH:?Set the host folder already synchronized by yandex.disk}
+        target: /releases
