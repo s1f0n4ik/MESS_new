@@ -89,14 +89,17 @@ class StudioApiTests(unittest.TestCase):
         self.assertEqual(self_delete.status_code, 409)
         service_headers = {"X-Collaboration-Secret": "development-collaboration-secret"}
         collab_auth = self.client.post("/api/internal/collaboration/auth", headers=service_headers,
-                                       json={"token": self.token, "documentName": "project-1-pdf1"})
+                                       json={"token": self.token, "documentName": "project-1-pdf1-layout-v2"})
         self.assertEqual(collab_auth.status_code, 200, collab_auth.text)
         self.assertEqual(collab_auth.json()["slot"], "pdf1")
-        collab_snapshot = self.client.post("/api/internal/collaboration/documents/project-1-pdf1",
+        stale_collab_auth = self.client.post("/api/internal/collaboration/auth", headers=service_headers,
+                                             json={"token": self.token, "documentName": "project-1-pdf1"})
+        self.assertEqual(stale_collab_auth.status_code, 400)
+        collab_snapshot = self.client.post("/api/internal/collaboration/documents/project-1-pdf1-layout-v2",
                                            headers=service_headers,
                                            json={"pages": body["pages"], "updatedBy": "admin@test.local"})
         self.assertEqual(collab_snapshot.status_code, 200, collab_snapshot.text)
-        unauthorized = self.client.get("/api/internal/collaboration/documents/project-1-pdf1")
+        unauthorized = self.client.get("/api/internal/collaboration/documents/project-1-pdf1-layout-v2")
         self.assertEqual(unauthorized.status_code, 401)
         deleted = self.client.delete(f"/api/users/{created.json()['id']}", headers=self.headers)
         self.assertEqual(deleted.status_code, 200)

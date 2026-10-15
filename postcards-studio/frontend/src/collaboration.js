@@ -11,6 +11,10 @@ const primitiveKeys = [
   'cardIndex', 'sourceLabel',
 ]
 const EDITOR_ORIGIN = Symbol('postcards-editor')
+// Bump this value whenever the persisted Yjs document schema/bootstrap changes.
+// A new room also creates a new IndexedDB namespace, so an old browser tab cannot
+// merge a stale local copy back into the freshly migrated server document.
+const COLLABORATION_LAYOUT_VERSION = 'layout-v2'
 
 function toElement(value) {
   const element = new Y.Map()
@@ -67,7 +71,7 @@ function colorFor(value) {
 }
 
 export function useCollaboration(projectId, slot, user) {
-  const roomName = `project-${projectId}-${slot}`
+  const roomName = `project-${projectId}-${slot}-${COLLABORATION_LAYOUT_VERSION}`
   const documentRef = useRef(null)
   const [pages, setPages] = useState({})
   const [ready, setReady] = useState(false)
