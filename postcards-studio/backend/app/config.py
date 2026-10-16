@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     history_interval_minutes: int = 15
     history_limit: int = 50
     environment: str = "development"
+    yandex_webdav_url: str = "https://webdav.yandex.ru"
+    yandex_disk_username: str = ""
+    yandex_disk_app_password: str = ""
+    yandex_disk_path: str = ""
+
+    @property
+    def yandex_delivery_enabled(self) -> bool:
+        return bool(self.yandex_disk_username and self.yandex_disk_app_password and self.yandex_disk_path)
 
     def validate_runtime(self) -> None:
         if self.environment.lower() != "production":
@@ -33,6 +41,12 @@ class Settings(BaseSettings):
         missing = [name for name, bad in unsafe.items() if bad]
         if missing:
             raise RuntimeError(f"Небезопасная production-конфигурация: задайте {', '.join(missing)}")
+        yandex_values = (self.yandex_disk_username, self.yandex_disk_app_password, self.yandex_disk_path)
+        if any(yandex_values) and not all(yandex_values):
+            raise RuntimeError(
+                "Для доставки в Яндекс Диск задайте STUDIO_YANDEX_DISK_USERNAME, "
+                "STUDIO_YANDEX_DISK_APP_PASSWORD и STUDIO_YANDEX_DISK_PATH"
+            )
 
 
 @lru_cache

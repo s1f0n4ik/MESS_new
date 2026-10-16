@@ -30,6 +30,7 @@ from .schemas import (CollaborationAuthBody, CollaborationSnapshotBody, CreateUs
                       SaveTemplateBody)
 from .security import (current_user, decode_token, hash_password, make_token, publisher,
                        sync_access, verify_password)
+from .yandex_disk import YandexDiskDelivery, YandexDiskDeliveryError
 
 
 cfg = settings()
@@ -628,6 +629,20 @@ async def publish(project_id: int, user: User = Depends(publisher), db: Session 
         "projectId": project_id, "projectName": project_value.name,
         "createdAt": iso(stamp), "createdBy": user.email,
     })
+    if cfg.yandex_delivery_enabled:
+        delivery = YandexDiskDelivery(
+            cfg.yandex_webdav_url,
+            cfg.yandex_disk_username,
+            cfg.yandex_disk_app_password,
+            cfg.yandex_disk_path,
+        )
+        try:
+            delivery.upload_release(releases_root / release_id, manifest)
+        except YandexDiskDeliveryError as exc:
+            shutil.rmtree(releases_root / release_id, ignore_errors=True)
+            raise HTTPException(502, f"PDF собраны, но доставка в Яндекс Диск не выполнена: {exc}") from exc
+        finally:
+            delivery.close()
     db.add(Release(id=release_id, project_id=project_id, sequence=sequence,
                    manifest_json=json.dumps(manifest, ensure_ascii=False), created_at=stamp,
                    created_by=user.email))
