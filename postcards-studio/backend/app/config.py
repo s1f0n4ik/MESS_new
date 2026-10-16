@@ -21,13 +21,20 @@ class Settings(BaseSettings):
     history_limit: int = 50
     environment: str = "development"
     yandex_webdav_url: str = "https://webdav.yandex.ru"
+    yandex_disk_api_url: str = "https://cloud-api.yandex.net/v1/disk"
+    yandex_disk_oauth_token: str = ""
     yandex_disk_username: str = ""
     yandex_disk_app_password: str = ""
     yandex_disk_path: str = ""
 
     @property
     def yandex_delivery_enabled(self) -> bool:
-        return bool(self.yandex_disk_username and self.yandex_disk_app_password and self.yandex_disk_path)
+        return bool(
+            self.yandex_disk_path and (
+                self.yandex_disk_oauth_token
+                or (self.yandex_disk_username and self.yandex_disk_app_password)
+            )
+        )
 
     def validate_runtime(self) -> None:
         if self.environment.lower() != "production":
@@ -41,12 +48,14 @@ class Settings(BaseSettings):
         missing = [name for name, bad in unsafe.items() if bad]
         if missing:
             raise RuntimeError(f"Небезопасная production-конфигурация: задайте {', '.join(missing)}")
-        yandex_values = (self.yandex_disk_username, self.yandex_disk_app_password, self.yandex_disk_path)
-        if any(yandex_values) and not all(yandex_values):
+        webdav_values = (self.yandex_disk_username, self.yandex_disk_app_password)
+        if any(webdav_values) and not all(webdav_values):
             raise RuntimeError(
-                "Для доставки в Яндекс Диск задайте STUDIO_YANDEX_DISK_USERNAME, "
-                "STUDIO_YANDEX_DISK_APP_PASSWORD и STUDIO_YANDEX_DISK_PATH"
+                "Для WebDAV задайте STUDIO_YANDEX_DISK_USERNAME и "
+                "STUDIO_YANDEX_DISK_APP_PASSWORD"
             )
+        if (self.yandex_disk_oauth_token or any(webdav_values)) and not self.yandex_disk_path:
+            raise RuntimeError("Для доставки задайте STUDIO_YANDEX_DISK_PATH")
 
 
 @lru_cache

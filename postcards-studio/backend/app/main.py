@@ -30,7 +30,7 @@ from .schemas import (CollaborationAuthBody, CollaborationSnapshotBody, CreateUs
                       SaveTemplateBody)
 from .security import (current_user, decode_token, hash_password, make_token, publisher,
                        sync_access, verify_password)
-from .yandex_disk import YandexDiskDelivery, YandexDiskDeliveryError
+from .yandex_disk import YandexDiskApiDelivery, YandexDiskDelivery, YandexDiskDeliveryError
 
 
 cfg = settings()
@@ -630,12 +630,19 @@ async def publish(project_id: int, user: User = Depends(publisher), db: Session 
         "createdAt": iso(stamp), "createdBy": user.email,
     })
     if cfg.yandex_delivery_enabled:
-        delivery = YandexDiskDelivery(
-            cfg.yandex_webdav_url,
-            cfg.yandex_disk_username,
-            cfg.yandex_disk_app_password,
-            cfg.yandex_disk_path,
-        )
+        if cfg.yandex_disk_oauth_token:
+            delivery = YandexDiskApiDelivery(
+                cfg.yandex_disk_api_url,
+                cfg.yandex_disk_oauth_token,
+                cfg.yandex_disk_path,
+            )
+        else:
+            delivery = YandexDiskDelivery(
+                cfg.yandex_webdav_url,
+                cfg.yandex_disk_username,
+                cfg.yandex_disk_app_password,
+                cfg.yandex_disk_path,
+            )
         try:
             delivery.upload_release(releases_root / release_id, manifest)
         except YandexDiskDeliveryError as exc:

@@ -6,10 +6,41 @@ from pathlib import Path
 
 import httpx
 
-from app.yandex_disk import YandexDiskDelivery, YandexDiskDeliveryError
+from app.yandex_disk import (YandexDiskApiDelivery, YandexDiskDelivery,
+                             YandexDiskDeliveryError)
 
 
 class YandexDiskDeliveryTests(unittest.TestCase):
+    def test_rest_api_uploads_current_manifest_last(self):
+        requested_paths: list[str] = []
+        upload_targets: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requested_paths.append(request.url.path)
+            if request.method == "GET" and request.url.path.endswith("/resources/upload"):
+                target = request.url.params["path"]
+                upload_targets.append(target)
+                return httpx.Response(200, json={"href": f"https://upload.test/{len(upload_targets)}"})
+            if request.url.host == "upload.test":
+                return httpx.Response(201)
+            return httpx.Response(201)
+
+        with tempfile.TemporaryDirectory() as raw_directory:
+            release_dir = Path(raw_directory)
+            files = []
+            for number in range(1, 5):
+                name = f"pdf{number}.pdf"
+                (release_dir / name).write_bytes(name.encode())
+                files.append({"slot": f"pdf{number}", "name": name})
+            manifest = {"releaseId": "release-api", "files": files}
+            delivery = YandexDiskApiDelivery(
+                "https://cloud-api.yandex.net/v1/disk", "oauth-token", "/Releases",
+                client=httpx.Client(transport=httpx.MockTransport(handler)),
+            )
+            delivery.upload_release(release_dir, manifest)
+            self.assertEqual(upload_targets[-1], "/Releases/current.json")
+            self.assertEqual(len(upload_targets), 6)
+
     def test_current_manifest_is_uploaded_after_complete_release(self):
         requests: list[tuple[str, str, bytes]] = []
 
