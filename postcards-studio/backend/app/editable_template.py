@@ -69,14 +69,19 @@ def blank_editable_layout(page_count: int = PAGE_COUNT) -> dict[str, list[dict]]
     for page in range(1, page_count + 1):
         items = [_item(f"background-{page}", "page-background", 0, 0, 1, 1,
                        color="#ffffff", locked=True)]
+        # The centre is a page separator, not part of either dashed page
+        # contour. Keep a white gutter on both sides, matching the approved
+        # 2x2 Illustrator/PDF sample.
+        items.append(_item(
+            f"divider-{page}", "shape", 0.498, 0, 0.004, 1,
+            shape="vertical-line", fill="transparent", stroke="#555555", strokeWidth=1,
+            strokeStyle="solid", locked=True, role="divider",
+        ))
         for column in range(2):
             card_index = ((page - 1) // 2) * 2 + column + 1
             scan_number, scan_code = SPREAD_SCANS[(page - 1) // 2][column]
-            # Both page halves meet exactly at the centre, as in the approved
-            # Illustrator sample. This avoids two parallel contours and makes
-            # the scan/caption/body sections one continuous column grid.
-            x = 0.018 if column == 0 else 0.500
-            column_width = 0.482
+            x = 0.018 if column == 0 else 0.510
+            column_width = 0.472
             inner_width = column_width - 0.010
             items.append(_item(
                 f"outline-{page}-{column}", "shape", x, 0.032, column_width, 0.936,

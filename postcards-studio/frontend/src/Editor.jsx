@@ -19,25 +19,29 @@ const SPREAD_SCANS = [
 function editableLayout(pageCount = 28) {
   const pages = {}
   for (let page = 1; page <= pageCount; page += 1) {
-    const items = [{ id: `background-${page}`, type: 'page-background', x: 0, y: 0, w: 1, h: 1, color: '#ffffff', locked: true }]
+    const items = [
+      { id: `background-${page}`, type: 'page-background', x: 0, y: 0, w: 1, h: 1, color: '#ffffff', locked: true },
+      { id: `divider-${page}`, type: 'shape', shape: 'vertical-line', x: .498, y: 0, w: .004, h: 1,
+        fill: 'transparent', stroke: '#555555', strokeWidth: 1, strokeStyle: 'solid', locked: true, role: 'divider' },
+    ]
     for (let column = 0; column < 2; column += 1) {
       const cardIndex = Math.floor((page - 1) / 2) * 2 + column + 1
       const [sequence, scanCode] = SPREAD_SCANS[Math.floor((page - 1) / 2)][column]
       const x = column ? .510 : .018
       items.push(
         { id: `outline-${page}-${column}`, type: 'shape', shape: 'rectangle', x, y: .032, w: .472, h: .936,
-          fill: 'transparent', stroke: '#777777', strokeWidth: 1, strokeStyle: 'dotted', locked: true, role: 'outline', cardIndex },
+          fill: 'transparent', stroke: '#777777', strokeWidth: 1, strokeStyle: 'dashed', locked: true, role: 'outline', cardIndex },
       )
       if (page % 2) items.push(
         { id: `scan-${page}-${column}`, type: 'image', x: x + .058, y: .034, w: .358, h: .337, src: '', fit: 'contain',
           locked: true, role: 'scan', sequence, scanCode, missing: sequence == null, cardIndex },
         { id: `scan-divider-${page}-${column}`, type: 'shape', shape: 'line', x: x + .005, y: .382, w: .462, h: .006,
-          fill: 'transparent', stroke: '#777777', strokeWidth: 1, strokeStyle: 'solid', locked: true, role: 'scan-divider', cardIndex },
+          fill: 'transparent', stroke: '#777777', strokeWidth: 1, strokeStyle: 'dashed', locked: true, role: 'scan-divider', cardIndex },
         { id: `caption-${page}-${column}`, type: 'text', x: x + .005, y: .393, w: .462, h: .078, text: '',
           placeholder: '', fontSize: 16, fontFamily: 'Times New Roman', color: '#111111',
           background: 'transparent', align: 'right', bold: false, italic: false, locked: true, role: 'caption', cardIndex },
         { id: `caption-divider-${page}-${column}`, type: 'shape', shape: 'line', x: x + .005, y: .476, w: .462, h: .006,
-          fill: 'transparent', stroke: '#777777', strokeWidth: 1, strokeStyle: 'solid', locked: true, role: 'caption-divider', cardIndex },
+          fill: 'transparent', stroke: '#777777', strokeWidth: 1, strokeStyle: 'dashed', locked: true, role: 'caption-divider', cardIndex },
         { id: `body-${page}-${column}`, type: 'text', x: x + .005, y: .489, w: .462, h: .473, text: '',
           placeholder: '', fontSize: 15, fontFamily: 'Times New Roman', color: '#111111',
           background: 'transparent', align: 'left', bold: false, italic: false, locked: true, role: 'body', cardIndex },

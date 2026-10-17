@@ -14,7 +14,7 @@ const EDITOR_ORIGIN = Symbol('postcards-editor')
 // Bump this value whenever the persisted Yjs document schema/bootstrap changes.
 // A new room also creates a new IndexedDB namespace, so an old browser tab cannot
 // merge a stale local copy back into the freshly migrated server document.
-const COLLABORATION_LAYOUT_VERSION = 'layout-v4'
+const COLLABORATION_LAYOUT_VERSION = 'layout-v5'
 
 function toElement(value) {
   const element = new Y.Map()

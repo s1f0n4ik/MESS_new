@@ -50,9 +50,16 @@ class EditableTemplateTests(unittest.TestCase):
                               if item.get("role") == "scan" and item.get("sequence"))
         self.assertEqual(real_numbers, list(range(1, 22)))
         self.assertEqual(len(SPREAD_SCANS), 14)
-        self.assertFalse(any(item.get("role") == "divider" for values in pages.values() for item in values))
+        self.assertTrue(all(len([item for item in values if item.get("role") == "divider"]) == 1
+                            for values in pages.values()))
         outlines = [item for item in pages["1"] if item.get("role") == "outline"]
-        self.assertAlmostEqual(outlines[0]["x"] + outlines[0]["w"], outlines[1]["x"])
+        divider = next(item for item in pages["1"] if item.get("role") == "divider")
+        self.assertEqual(divider["shape"], "vertical-line")
+        self.assertEqual(divider["strokeStyle"], "solid")
+        self.assertAlmostEqual(divider["x"] + divider["w"] / 2, 0.5)
+        self.assertLess(outlines[0]["x"] + outlines[0]["w"], 0.5)
+        self.assertGreater(outlines[1]["x"], 0.5)
+        self.assertAlmostEqual(0.5 - (outlines[0]["x"] + outlines[0]["w"]), outlines[1]["x"] - 0.5)
         self.assertTrue(all(item["strokeStyle"] == "dashed" for item in outlines))
         dividers = [item for item in pages["1"] if item.get("role") in {"scan-divider", "caption-divider"}]
         self.assertTrue(all(item["strokeStyle"] == "dashed" for item in dividers))
