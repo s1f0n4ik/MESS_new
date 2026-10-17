@@ -108,8 +108,8 @@ def render_document(template: Path, content: dict, assets_root: Path, output: Pa
                 if background and background != "transparent":
                     page.draw_rect(rect, color=None, fill=_color(background, (1, 1, 1)), overlay=True)
                 align = {"left": 0, "center": 1, "right": 2, "justify": 3}.get(item.get("align"), 0)
-                kwargs = {"fontsize": max(6, min(240, float(item.get("fontSize", 28)))),
-                          "color": _color(item.get("color")), "align": align, "overlay": True}
+                requested_size = max(6, min(240, float(item.get("fontSize", 28))))
+                kwargs = {"color": _color(item.get("color")), "align": align, "overlay": True}
                 family = item.get("fontFamily", "Arial")
                 font_path = _font_path(family, bool(item.get("bold")), bool(item.get("italic")))
                 if not font_path:
@@ -117,7 +117,16 @@ def render_document(template: Path, content: dict, assets_root: Path, output: Pa
                 variant = f"{family}-{bool(item.get('bold'))}-{bool(item.get('italic'))}".replace(" ", "-")
                 page.insert_font(fontname=variant, fontfile=str(font_path))
                 kwargs.update(fontname=variant)
-                page.insert_textbox(rect, str(item.get("text") or ""), **kwargs)
+                text = str(item.get("text") or "")
+                # PyMuPDF draws nothing when the complete textbox misses the
+                # available height. Linux fallback fonts are slightly wider
+                # than Times New Roman, so find the largest size that fits.
+                if text:
+                    for attempt in range(13):
+                        font_size = max(6, requested_size * (0.96 ** attempt))
+                        spare_height = page.insert_textbox(rect, text, fontsize=font_size, **kwargs)
+                        if spare_height >= 0 or font_size <= 6:
+                            break
             elif kind == "shape":
                 stroke = _color(item.get("stroke"))
                 fill_value = item.get("fill")
