@@ -43,6 +43,17 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', stop)
   }
 
+  const startIndentedParagraph = (event, item) => {
+    if (item.role !== 'body' || event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return
+    event.preventDefault()
+    const target = event.currentTarget
+    const start = target.selectionStart
+    const end = target.selectionEnd
+    const next = `${item.text.slice(0, start)}\n\u2003${item.text.slice(end)}`
+    onChange(number, item.id, { text: next })
+    requestAnimationFrame(() => { target.selectionStart = target.selectionEnd = start + 2 })
+  }
+
   return <section className="pdf-page-wrap">
     <div className="page-label">{number}</div>
     <div className="pdf-page" ref={pageRef} style={{ aspectRatio: `1 / ${ratio}` }} onPointerDown={() => onSelect(number, null)}>
@@ -53,8 +64,12 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
         if (item.type === 'page-background' || (item.type === 'shape' && item.locked)) style.pointerEvents = 'none'
         return <div key={item.id} className={`editor-item ${active ? 'selected' : ''} ${item.locked ? 'locked' : ''} item-${item.type}`} style={style}
           onPointerDown={(event) => { if (item.locked) { event.stopPropagation(); onSelect(number, item.id) } }}>
-          {item.type === 'text' && <textarea value={item.text} placeholder={item.placeholder || ''} onFocus={() => onSelect(number, item.id)}
+          {item.type === 'text' && <textarea value={item.text} placeholder={item.placeholder || ''} onFocus={() => {
+            onSelect(number, item.id)
+            if (item.role === 'body' && !item.text) onChange(number, item.id, { text: '\u2003' })
+          }}
             onChange={(e) => onChange(number, item.id, { text: e.target.value })}
+            onKeyDown={(e) => startIndentedParagraph(e, item)}
             style={{ fontSize: `${Math.max(10, item.fontSize * .55)}px`, color: item.color, background: item.background,
                      fontFamily: item.fontFamily || 'Times New Roman, serif', fontWeight: item.bold ? 700 : 400,
                      fontStyle: item.italic ? 'italic' : 'normal', textAlign: item.align === 'justify' ? 'justify' : item.align }} />}

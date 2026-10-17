@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
+import io
 from collections import Counter
 from pathlib import Path
 
 import pymupdf as fitz
 from docx import Document as WordDocument
 from docx.oxml.ns import qn
+from PIL import Image, ImageChops, ImageOps, ImageStat, UnidentifiedImageError
 
 
 PAGE_COUNT = 28
+PARAGRAPH_INDENT = "\u2003"
 DOCUMENT_TITLES = {
     "pdf1": "Экфрасисы",
     "pdf2": "Формальный анализ",
@@ -118,6 +121,14 @@ def blank_editable_layout(page_count: int = PAGE_COUNT) -> dict[str, list[dict]]
     return pages
 
 
+def indent_paragraphs(text: str) -> str:
+    """Prefix every non-empty paragraph with one em-space (a red line)."""
+    return "\n".join(
+        line if not line.strip() or line.startswith(PARAGRAPH_INDENT) else PARAGRAPH_INDENT + line.lstrip()
+        for line in str(text or "").split("\n")
+    )
+
+
 def _region_text(page: fitz.Page, x0: float, x1: float, y0: float, y1: float,
                  reflow: bool = False) -> str:
     rows: list[list] = []
@@ -151,7 +162,7 @@ def _region_text(page: fitz.Page, x0: float, x1: float, y0: float, y1: float,
             paragraphs[-1] = paragraphs[-1][:-1] + line
         else:
             paragraphs[-1] += " " + line
-    return "\n".join(paragraphs)
+    return indent_paragraphs("\n".join(paragraphs))
 
 
 def import_legacy_pdf(source_pdf: Path, assets_root: Path, project_id: int = 1) -> dict[str, list[dict]]:
@@ -203,7 +214,42 @@ def import_legacy_pdf(source_pdf: Path, assets_root: Path, project_id: int = 1) 
     return pages
 
 
-def extract_customer_scans(source_docx: Path, assets_root: Path, project_id: int = 1) -> dict[int, dict]:
+def _decoded_image(blob: bytes) -> Image.Image | None:
+    try:
+        with Image.open(io.BytesIO(blob)) as image:
+            return image.convert("RGB")
+    except (UnidentifiedImageError, OSError):
+        return None
+
+
+def _visual_score(left: Image.Image, right: Image.Image) -> float:
+    left_small = ImageOps.fit(left, (64, 64))
+    right_small = ImageOps.fit(right, (64, 64))
+    return sum(value * value for value in ImageStat.Stat(ImageChops.difference(left_small, right_small)).rms)
+
+
+def _best_original(part, candidates: list) -> object:
+    """Resolve a Word table thumbnail to the larger copy embedded elsewhere in the DOCX."""
+    thumbnail = _decoded_image(part.blob)
+    if thumbnail is None:
+        return part
+    thumbnail_area = thumbnail.width * thumbnail.height
+    matches = []
+    for candidate in candidates:
+        image = _decoded_image(candidate.blob)
+        if image is None or image.width * image.height < thumbnail_area * 4:
+            continue
+        matches.append((_visual_score(thumbnail, image), -(image.width * image.height), candidate))
+    if not matches:
+        return part
+    score, _area, match = min(matches, key=lambda value: (value[0], value[1]))
+    # Resized copies of the same scan score in the low hundreds. A conservative
+    # threshold prevents visually similar blank postcard backs from being mixed up.
+    return match if score <= 750 else part
+
+
+def extract_customer_scans(source_docx: Path, assets_root: Path, project_id: int = 1,
+                           asset_version: str = "starter-v3") -> dict[int, dict]:
     source = WordDocument(source_docx)
     if not source.tables:
         raise ValueError("В DOCX нет таблиц")
@@ -217,7 +263,15 @@ def extract_customer_scans(source_docx: Path, assets_root: Path, project_id: int
             relation_ids = [node.get(qn("r:embed")) for node in cell._tc.xpath(".//a:blip")]
             occurrences.update(relation_ids)
             cells.append((row_index, column_index, " ".join(cell.text.split()), relation_ids))
-    folder = Path(assets_root) / str(project_id) / "starter-v2"
+    image_parts = []
+    known_part_names = set()
+    for part in source.part.related_parts.values():
+        content_type = getattr(part, "content_type", "")
+        part_name = str(getattr(part, "partname", ""))
+        if content_type.startswith("image/") and part_name not in known_part_names:
+            known_part_names.add(part_name)
+            image_parts.append(part)
+    folder = Path(assets_root) / str(project_id) / asset_version
     folder.mkdir(parents=True, exist_ok=True)
     result: dict[int, dict] = {}
     seen = set()
@@ -230,6 +284,7 @@ def extract_customer_scans(source_docx: Path, assets_root: Path, project_id: int
                 continue
             seen.add(relation_id)
             part = source.part.related_parts.get(relation_id)
+            part = _best_original(part, image_parts)
             content_type = getattr(part, "content_type", "")
             extension = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}.get(content_type)
             if not extension:
@@ -237,12 +292,33 @@ def extract_customer_scans(source_docx: Path, assets_root: Path, project_id: int
             name = f"scan-{number:02d}{extension}"
             path = folder / name
             path.write_bytes(part.blob)
-            result[number] = {"path": path, "url": f"/assets/{project_id}/starter-v2/{name}", "label": label}
+            result[number] = {"path": path, "url": f"/assets/{project_id}/{asset_version}/{name}", "label": label}
             break
     required = set(range(1, 21))
     if not required.issubset(result):
         raise ValueError(f"В таблице найдены не все обязательные сканы 1–20: {sorted(result)}")
     return result
+
+
+def prefer_legacy_for_small_scans(scans: dict[int, dict], assets_root: Path, project_id: int = 1,
+                                  asset_version: str = "starter-v3") -> None:
+    """Use the sharper legacy-PDF rendering when the DOCX only contains a tiny preview."""
+    legacy_folder = Path(assets_root) / str(project_id) / "starter-v1"
+    target_folder = Path(assets_root) / str(project_id) / asset_version
+    target_folder.mkdir(parents=True, exist_ok=True)
+    for number, value in list(scans.items()):
+        old_card = LEGACY_CARD_BY_SCAN.get(number)
+        if not old_card:
+            continue
+        image = _decoded_image(value["path"].read_bytes())
+        if image is not None and image.width >= 400 and image.height >= 300:
+            continue
+        source = legacy_folder / f"legacy-card-{old_card:02d}.png"
+        if not source.is_file():
+            continue
+        target = target_folder / f"scan-{number:02d}.png"
+        target.write_bytes(source.read_bytes())
+        value.update(path=target, url=f"/assets/{project_id}/{asset_version}/{target.name}")
 
 
 def import_customer_layout(source_pdf: Path, source_docx: Path, assets_root: Path,
@@ -251,12 +327,13 @@ def import_customer_layout(source_pdf: Path, source_docx: Path, assets_root: Pat
     legacy = import_legacy_pdf(source_pdf, assets_root, project_id)
     scans = extract_customer_scans(source_docx, assets_root, project_id)
     legacy_folder = Path(assets_root) / str(project_id) / "starter-v1"
+    prefer_legacy_for_small_scans(scans, assets_root, project_id)
     if 21 not in scans:
         source = legacy_folder / f"legacy-card-{LEGACY_CARD_BY_SCAN[21]:02d}.png"
-        target_folder = Path(assets_root) / str(project_id) / "starter-v2"
+        target_folder = Path(assets_root) / str(project_id) / "starter-v3"
         target = target_folder / "scan-21.png"
         target.write_bytes(source.read_bytes())
-        scans[21] = {"path": target, "url": f"/assets/{project_id}/starter-v2/scan-21.png",
+        scans[21] = {"path": target, "url": f"/assets/{project_id}/starter-v3/scan-21.png",
                      "label": "А. М. Греков. Тачанка"}
     pages = blank_editable_layout()
 

@@ -1,13 +1,40 @@
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 
 import pymupdf as fitz
+from PIL import Image
 
-from app.editable_template import PAGE_COUNT, SPREAD_SCANS, blank_editable_layout, import_legacy_pdf, without_body_text
+from app.editable_template import (
+    PAGE_COUNT, PARAGRAPH_INDENT, SPREAD_SCANS, _best_original, blank_editable_layout,
+    import_legacy_pdf, indent_paragraphs, without_body_text,
+)
+
+
+class ImagePart:
+    def __init__(self, image: Image.Image):
+        stream = BytesIO()
+        image.save(stream, format="PNG")
+        self.blob = stream.getvalue()
 
 
 class EditableTemplateTests(unittest.TestCase):
+    def test_paragraphs_receive_red_line_once(self):
+        value = indent_paragraphs("Первый абзац\nВторой абзац\n\n" + PARAGRAPH_INDENT + "Третий")
+        self.assertEqual(value, PARAGRAPH_INDENT + "Первый абзац\n" + PARAGRAPH_INDENT +
+                         "Второй абзац\n\n" + PARAGRAPH_INDENT + "Третий")
+        self.assertEqual(indent_paragraphs(value), value)
+
+    def test_word_thumbnail_resolves_to_larger_original(self):
+        original_image = Image.new("RGB", (640, 420), (180, 40, 20))
+        thumbnail_image = original_image.resize((64, 42))
+        unrelated_image = Image.new("RGB", (640, 420), (20, 80, 180))
+        original = ImagePart(original_image)
+        thumbnail = ImagePart(thumbnail_image)
+        unrelated = ImagePart(unrelated_image)
+        self.assertIs(_best_original(thumbnail, [unrelated, original]), original)
+
     def test_layout_uses_fourteen_two_page_spreads(self):
         pages = blank_editable_layout()
         self.assertEqual(len(pages), PAGE_COUNT)
@@ -44,7 +71,7 @@ class EditableTemplateTests(unittest.TestCase):
             self.assertEqual(next(item for item in first if item.get("role") == "caption")["text"],
                              "Editable caption")
             self.assertEqual(next(item for item in first if item.get("role") == "body")["text"],
-                             "Editable body")
+                             PARAGRAPH_INDENT + "Editable body")
             self.assertTrue((root / "assets" / "1" / "starter-v1" / "scan-01.png").is_file())
             blank = without_body_text(pages)
             self.assertEqual(next(item for item in blank["1"] if item.get("role") == "body")["text"], "")
