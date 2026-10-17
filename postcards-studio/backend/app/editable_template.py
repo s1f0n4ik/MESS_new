@@ -153,9 +153,10 @@ def _region_text(page: fitz.Page, x0: float, x1: float, y0: float, y1: float,
     if not reflow:
         return "\n".join(line for _y, _x, line in lines)
     paragraphs: list[str] = []
+    base_x = min((line_x for _line_y, line_x, _line in lines), default=x0)
     for index, (line_y, line_x, line) in enumerate(lines):
         previous_y = lines[index - 1][0] if index else line_y
-        begins_paragraph = index == 0 or line_x > x0 + 8 or line_y - previous_y > 24
+        begins_paragraph = index == 0 or line_x > base_x + 8 or line_y - previous_y > 24
         if begins_paragraph:
             paragraphs.append(line)
         elif paragraphs[-1].endswith("-"):
