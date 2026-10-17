@@ -50,7 +50,7 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
       {[...(items || [])].sort((a, b) => (a.type === 'page-background' ? -1 : 0) - (b.type === 'page-background' ? -1 : 0)).map((item) => {
         const active = selected?.page === number && selected?.id === item.id
         const style = { left: `${item.x * 100}%`, top: `${item.y * 100}%`, width: `${item.w * 100}%`, height: `${item.h * 100}%` }
-        if (item.type === 'page-background') style.pointerEvents = 'none'
+        if (item.type === 'page-background' || (item.type === 'shape' && item.locked)) style.pointerEvents = 'none'
         return <div key={item.id} className={`editor-item ${active ? 'selected' : ''} ${item.locked ? 'locked' : ''} item-${item.type}`} style={style}
           onPointerDown={(event) => { if (item.locked) { event.stopPropagation(); onSelect(number, item.id) } }}>
           {item.type === 'text' && <textarea value={item.text} placeholder={item.placeholder || ''} onFocus={() => onSelect(number, item.id)}
@@ -58,9 +58,11 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
             style={{ fontSize: `${Math.max(10, item.fontSize * .55)}px`, color: item.color, background: item.background,
                      fontFamily: item.fontFamily || 'Times New Roman, serif', fontWeight: item.bold ? 700 : 400,
                      fontStyle: item.italic ? 'italic' : 'normal', textAlign: item.align === 'justify' ? 'justify' : item.align }} />}
-          {item.type === 'image' && (item.src
+          {item.type === 'image' && (item.missing
+            ? <div className="missing-scan" title={`Оборот ${item.scanCode || ''} в архиве не сохранился`} />
+            : item.src
             ? <img src={item.src} draggable="false" style={{ objectFit: item.fit || 'contain' }} />
-            : <div className="image-placeholder"><b>Изображение {item.sequence || item.cardIndex || ''}</b><span>Выберите слот и загрузите файл</span></div>)}
+            : <div className="image-placeholder"><b>Скан {item.scanCode || item.sequence || item.cardIndex || ''}</b><span>Выберите слот и загрузите файл</span></div>)}
           {item.type === 'cover' && <div className="cover" style={{ background: item.color || '#fff' }} />}
           {item.type === 'page-background' && <div className="page-background" style={{ background: item.color || '#fff' }} />}
           {item.type === 'shape' && <div className={`shape shape-${item.shape || 'rectangle'}`} style={{

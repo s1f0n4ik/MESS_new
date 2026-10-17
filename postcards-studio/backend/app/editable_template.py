@@ -14,6 +14,25 @@ DOCUMENT_TITLES = {
     "pdf4": "Контекст восприятия",
 }
 
+# Порядок разворотов подтверждён заказчиком 15.10.2026. ``None`` означает
+# намеренно чёрную заглушку: оборот в архиве не сохранился.
+SPREAD_SCANS = (
+    ((1, "1"), (None, "1.1")),
+    ((17, "1.21"), (9, "1.2")),
+    ((2, "2"), (None, "2.1")),
+    ((18, "2.21"), (10, "2.2")),
+    ((3, "3"), (11, "3.1")),
+    ((4, "4"), (None, "4.1")),
+    ((None, "4.21"), (12, "4.2")),
+    ((5, "5"), (13, "5.1")),
+    ((6, "6"), (None, "6.1")),
+    ((19, "6.21"), (14, "6.2")),
+    ((7, "7"), (None, "7.1")),
+    ((20, "7.21"), (15, "7.2")),
+    ((8, "8"), (None, "8.1")),
+    ((21, "8.21"), (16, "8.2")),
+)
+
 
 def _item(item_id: str, item_type: str, x: float, y: float, w: float, h: float, **extra) -> dict:
     return {"id": item_id, "type": item_type, "x": x, "y": y, "w": w, "h": h, **extra}
@@ -32,6 +51,7 @@ def blank_editable_layout(page_count: int = PAGE_COUNT) -> dict[str, list[dict]]
                        color="#ffffff", locked=True)]
         for column in range(2):
             card_index = ((page - 1) // 2) * 2 + column + 1
+            scan_number, scan_code = SPREAD_SCANS[(page - 1) // 2][column]
             x = 0.018 if column == 0 else 0.510
             items.append(_item(
                 f"outline-{page}-{column}", "shape", x, 0.032, 0.472, 0.936,
@@ -42,36 +62,41 @@ def blank_editable_layout(page_count: int = PAGE_COUNT) -> dict[str, list[dict]]
                 items.extend([
                     _item(
                         f"scan-{page}-{column}", "image", x + 0.058, 0.034, 0.358, 0.337,
-                        src="", fit="contain", locked=True, role="scan", sequence=card_index,
-                        cardIndex=card_index,
+                        src="", fit="contain", locked=True, role="scan", sequence=scan_number,
+                        scanCode=scan_code, missing=scan_number is None, cardIndex=card_index,
                     ),
                     _item(
-                        f"caption-{page}-{column}", "text", x + 0.005, 0.395, 0.462, 0.085,
-                        text="", placeholder="Подпись под изображением", fontSize=16,
+                        f"scan-divider-{page}-{column}", "shape", x + 0.005, 0.382, 0.462, 0.006,
+                        shape="line", fill="transparent", stroke="#777777", strokeWidth=1,
+                        strokeStyle="solid", locked=True, role="scan-divider", cardIndex=card_index,
+                    ),
+                    _item(
+                        f"caption-{page}-{column}", "text", x + 0.005, 0.393, 0.462, 0.078,
+                        text="", placeholder="", fontSize=16,
                         fontFamily="Times New Roman", color="#111111", background="transparent",
                         align="right", bold=False, italic=False, locked=True, role="caption",
                         cardIndex=card_index,
                     ),
                     _item(
-                        f"body-{page}-{column}", "text", x + 0.005, 0.485, 0.462, 0.477,
-                        text="", placeholder="Текст", fontSize=15, fontFamily="Times New Roman",
-                        color="#111111", background="transparent", align="justify", bold=False,
+                        f"caption-divider-{page}-{column}", "shape", x + 0.005, 0.476, 0.462, 0.006,
+                        shape="line", fill="transparent", stroke="#777777", strokeWidth=1,
+                        strokeStyle="solid", locked=True, role="caption-divider", cardIndex=card_index,
+                    ),
+                    _item(
+                        f"body-{page}-{column}", "text", x + 0.005, 0.489, 0.462, 0.473,
+                        text="", placeholder="", fontSize=15, fontFamily="Times New Roman",
+                        color="#111111", background="transparent", align="left", bold=False,
                         italic=False, locked=True, role="body", cardIndex=card_index,
                     ),
                 ])
             else:
                 items.append(_item(
                     f"body-{page}-{column}", "text", x + 0.005, 0.025, 0.462, 0.935,
-                    text="", placeholder="Продолжение текста", fontSize=15,
+                    text="", placeholder="", fontSize=15,
                     fontFamily="Times New Roman", color="#111111", background="transparent",
-                    align="justify", bold=False, italic=False, locked=True, role="body",
+                    align="left", bold=False, italic=False, locked=True, role="body",
                     cardIndex=card_index,
                 ))
-        items.append(_item(
-            f"divider-{page}", "shape", 0.499, 0.025, 0.002, 0.95,
-            shape="rectangle", fill="#333333", stroke="#333333", strokeWidth=1,
-            strokeStyle="solid", locked=True, role="divider",
-        ))
         pages[str(page)] = items
     return pages
 
@@ -144,14 +169,16 @@ def import_legacy_pdf(source_pdf: Path, assets_root: Path, project_id: int = 1) 
                                 if item.get("role") == "caption" and item.get("cardIndex") == card_index)
             caption_item["text"] = caption
 
-            # Rendering the image slot rather than extracting the raw XObject
-            # preserves rotations, masks and the intentional black placeholders.
-            clip = fitz.Rect(x0 + 90, 27, x0 + 518, 313)
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(1.8, 1.8), clip=clip, alpha=False)
-            name = f"scan-{card_index:02d}.png"
-            pixmap.save(asset_folder / name)
+            # Real scans are placed by their catalogue number. Missing reverse
+            # sides remain generated black placeholders instead of bitmap files.
             image_item = next(item for item in pages[str(page_number)]
                               if item.get("role") == "scan" and item.get("cardIndex") == card_index)
+            if image_item.get("missing"):
+                continue
+            clip = fitz.Rect(x0 + 90, 27, x0 + 518, 313)
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(1.8, 1.8), clip=clip, alpha=False)
+            name = f"scan-{int(image_item['sequence']):02d}.png"
+            pixmap.save(asset_folder / name)
             image_item["src"] = f"/assets/{project_id}/starter-v1/{name}"
             image_item["sourceLabel"] = caption.replace("\n", " ")
     document.close()

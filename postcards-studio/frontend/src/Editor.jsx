@@ -6,6 +6,15 @@ import UserDialog from './UserDialog'
 
 const newId = () => `e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
 const FONT_OPTIONS = [['Times New Roman', 'Times New Roman'], ['Arial', 'Arial'], ['Georgia', 'Georgia'], ['Courier New', 'Courier New']]
+const SPREAD_SCANS = [
+  [[1, '1'], [null, '1.1']], [[17, '1.21'], [9, '1.2']],
+  [[2, '2'], [null, '2.1']], [[18, '2.21'], [10, '2.2']],
+  [[3, '3'], [11, '3.1']], [[4, '4'], [null, '4.1']],
+  [[null, '4.21'], [12, '4.2']], [[5, '5'], [13, '5.1']],
+  [[6, '6'], [null, '6.1']], [[19, '6.21'], [14, '6.2']],
+  [[7, '7'], [null, '7.1']], [[20, '7.21'], [15, '7.2']],
+  [[8, '8'], [null, '8.1']], [[21, '8.21'], [16, '8.2']],
+]
 
 function editableLayout(pageCount = 28) {
   const pages = {}
@@ -13,6 +22,7 @@ function editableLayout(pageCount = 28) {
     const items = [{ id: `background-${page}`, type: 'page-background', x: 0, y: 0, w: 1, h: 1, color: '#ffffff', locked: true }]
     for (let column = 0; column < 2; column += 1) {
       const cardIndex = Math.floor((page - 1) / 2) * 2 + column + 1
+      const [sequence, scanCode] = SPREAD_SCANS[Math.floor((page - 1) / 2)][column]
       const x = column ? .510 : .018
       items.push(
         { id: `outline-${page}-${column}`, type: 'shape', shape: 'rectangle', x, y: .032, w: .472, h: .936,
@@ -20,20 +30,22 @@ function editableLayout(pageCount = 28) {
       )
       if (page % 2) items.push(
         { id: `scan-${page}-${column}`, type: 'image', x: x + .058, y: .034, w: .358, h: .337, src: '', fit: 'contain',
-          locked: true, role: 'scan', sequence: cardIndex, cardIndex },
-        { id: `caption-${page}-${column}`, type: 'text', x: x + .005, y: .395, w: .462, h: .085, text: '',
-          placeholder: 'Подпись под изображением', fontSize: 16, fontFamily: 'Times New Roman', color: '#111111',
+          locked: true, role: 'scan', sequence, scanCode, missing: sequence == null, cardIndex },
+        { id: `scan-divider-${page}-${column}`, type: 'shape', shape: 'line', x: x + .005, y: .382, w: .462, h: .006,
+          fill: 'transparent', stroke: '#777777', strokeWidth: 1, strokeStyle: 'solid', locked: true, role: 'scan-divider', cardIndex },
+        { id: `caption-${page}-${column}`, type: 'text', x: x + .005, y: .393, w: .462, h: .078, text: '',
+          placeholder: '', fontSize: 16, fontFamily: 'Times New Roman', color: '#111111',
           background: 'transparent', align: 'right', bold: false, italic: false, locked: true, role: 'caption', cardIndex },
-        { id: `body-${page}-${column}`, type: 'text', x: x + .005, y: .485, w: .462, h: .477, text: '',
-          placeholder: 'Текст', fontSize: 15, fontFamily: 'Times New Roman', color: '#111111',
-          background: 'transparent', align: 'justify', bold: false, italic: false, locked: true, role: 'body', cardIndex },
+        { id: `caption-divider-${page}-${column}`, type: 'shape', shape: 'line', x: x + .005, y: .476, w: .462, h: .006,
+          fill: 'transparent', stroke: '#777777', strokeWidth: 1, strokeStyle: 'solid', locked: true, role: 'caption-divider', cardIndex },
+        { id: `body-${page}-${column}`, type: 'text', x: x + .005, y: .489, w: .462, h: .473, text: '',
+          placeholder: '', fontSize: 15, fontFamily: 'Times New Roman', color: '#111111',
+          background: 'transparent', align: 'left', bold: false, italic: false, locked: true, role: 'body', cardIndex },
       )
       else items.push({ id: `body-${page}-${column}`, type: 'text', x: x + .005, y: .025, w: .462, h: .935, text: '',
-        placeholder: 'Продолжение текста', fontSize: 15, fontFamily: 'Times New Roman', color: '#111111',
-        background: 'transparent', align: 'justify', bold: false, italic: false, locked: true, role: 'body', cardIndex })
+        placeholder: '', fontSize: 15, fontFamily: 'Times New Roman', color: '#111111',
+        background: 'transparent', align: 'left', bold: false, italic: false, locked: true, role: 'body', cardIndex })
     }
-    items.push({ id: `divider-${page}`, type: 'shape', shape: 'rectangle', x: .499, y: .025, w: .002, h: .95,
-      fill: '#333333', stroke: '#333333', strokeWidth: 1, strokeStyle: 'solid', locked: true, role: 'divider' })
     pages[page] = items
   }
   return pages
@@ -91,12 +103,15 @@ export default function Editor({ project, user, onLogout }) {
     }
     collaboration.add(activePage, item); setSelected({ page: activePage, id: item.id })
   }
-  const remove = () => { if (!selected) return; collaboration.remove(selected.page, selected.id); setSelected(null) }
+  const remove = () => {
+    if (!selected || item?.locked) return
+    collaboration.remove(selected.page, selected.id); setSelected(null)
+  }
   const item = selected ? (collaboration.pages?.[selected.page] || []).find((value) => value.id === selected.id) : null
   const pageBackground = (collaboration.pages?.[activePage] || []).find((value) => value.type === 'page-background')
 
   const duplicate = () => {
-    if (!item) return
+    if (!item || item.locked) return
     const copy = { ...item, id: newId(), x: Math.min(Math.max(0, 1 - item.w), item.x + .025), y: Math.min(Math.max(0, 1 - item.h), item.y + .025) }
     collaboration.add(selected.page, copy); setSelected({ page: selected.page, id: copy.id })
   }
@@ -105,13 +120,13 @@ export default function Editor({ project, user, onLogout }) {
     const onKeyDown = (event) => {
       const editing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target?.tagName) || event.target?.isContentEditable
       if (editing) return
-      if ((event.key === 'Delete' || event.key === 'Backspace') && item) { event.preventDefault(); remove() }
+      if ((event.key === 'Delete' || event.key === 'Backspace') && item && !item.locked) { event.preventDefault(); remove() }
       else if (event.key === 'Escape') setSelected(null)
       else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
         event.preventDefault(); event.shiftKey ? collaboration.redo() : collaboration.undo()
       } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') {
         event.preventDefault(); collaboration.redo()
-      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd' && item) {
+      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd' && item && !item.locked) {
         event.preventDefault(); duplicate()
       } else if (item && !item.locked && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
         event.preventDefault()
@@ -156,16 +171,15 @@ export default function Editor({ project, user, onLogout }) {
       let slots = Object.values(current).flat().filter((value) => value.type === 'image' && value.role === 'scan')
       const pages = slots.length ? current : editableLayout()
       slots = Object.values(pages).flat().filter((value) => value.type === 'image' && value.role === 'scan')
-        .sort((a, b) => Number(a.cardIndex || 0) - Number(b.cardIndex || 0))
-      for (const slotValue of slots) { slotValue.src = ''; slotValue.sourceLabel = ''; slotValue.sequence = slotValue.cardIndex }
-      imported.assets.forEach((asset, index) => {
-        if (!slots[index]) return
-        slots[index].src = asset.url
-        slots[index].sequence = asset.number
-        slots[index].sourceLabel = asset.label
+      for (const slotValue of slots) { slotValue.src = ''; slotValue.sourceLabel = '' }
+      imported.assets.forEach((asset) => {
+        const slotValue = slots.find((candidate) => Number(candidate.sequence) === Number(asset.number))
+        if (!slotValue) return
+        slotValue.src = asset.url
+        slotValue.sourceLabel = asset.label
       })
       collaboration.replace(pages); setSelected(null)
-      setNotice(`Импортировано ${imported.count} изображений из последней таблицы; порядок — слева направо, сверху вниз`)
+      setNotice(`Импортировано ${imported.count} изображений из последней таблицы и расставлено по утверждённой нумерации`)
     } catch (reason) { setError(reason.message); setNotice('') }
   }
 
@@ -288,8 +302,8 @@ export default function Editor({ project, user, onLogout }) {
         </select>
         <button onClick={() => add('cover')} disabled={!collaboration.ready}>＋ Маска</button>
         <span className="toolbar-divider" />
-        <button onClick={duplicate} disabled={!item} title="Ctrl+D">Дублировать</button>
-        <button className="danger-button" onClick={remove} disabled={!item} title="Delete">Удалить</button>
+        <button onClick={duplicate} disabled={!item || item.locked} title={item?.locked ? 'Сначала разблокируйте положение' : 'Ctrl+D'}>Дублировать</button>
+        <button className="danger-button" onClick={remove} disabled={!item || item.locked} title={item?.locked ? 'Сначала разблокируйте положение' : 'Delete'}>Удалить</button>
         <select className="toolbar-select" value="" aria-label="Очистка документа" onChange={(event) => { const action = event.target.value; event.target.value = ''; if (action === 'blank-page') blankPage(); if (action === 'reset-page') resetPage(); if (action === 'blank-document') blankDocument() }}>
           <option value="">Очистить…</option><option value="blank-page">Текущую страницу до белого листа</option><option value="reset-page">Вернуть шаблон на странице</option><option value="blank-document">Создать пустой документ</option>
         </select>
@@ -314,7 +328,7 @@ export default function Editor({ project, user, onLogout }) {
           <button onClick={() => change(selected.page, item.id, { background: 'transparent' })}>Без подложки</button>
         </>}
         {item.type === 'image' && <>
-          {item.sequence && <span>№ {item.sequence}{item.sourceLabel ? ` · ${item.sourceLabel}` : ''}</span>}
+          <span>Позиция {item.scanCode || item.sequence || item.cardIndex}{item.sourceLabel ? ` · ${item.sourceLabel}` : ''}</span>
           <label>Размещение<select value={item.fit || 'contain'} onChange={(event) => change(selected.page, item.id, { fit: event.target.value })}><option value="contain">Вписать</option><option value="cover">Заполнить</option></select></label>
           <button onClick={() => { replaceImageRef.current = selected; fileRef.current?.click() }}>Заменить файл</button>
         </>}

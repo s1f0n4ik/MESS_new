@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 
-from app.editable_template import PAGE_COUNT, blank_editable_layout, import_legacy_pdf, without_body_text
+from app.editable_template import PAGE_COUNT, SPREAD_SCANS, blank_editable_layout, import_legacy_pdf, without_body_text
 
 
 class EditableTemplateTests(unittest.TestCase):
@@ -16,6 +16,14 @@ class EditableTemplateTests(unittest.TestCase):
         self.assertEqual({item["cardIndex"] for item in pages["1"] if item.get("role") == "body"}, {1, 2})
         self.assertEqual({item["cardIndex"] for item in pages["2"] if item.get("role") == "body"}, {1, 2})
         self.assertEqual({item["cardIndex"] for item in pages["27"] if item.get("role") == "body"}, {27, 28})
+        first_scans = [item for item in pages["1"] if item.get("role") == "scan"]
+        self.assertEqual([(item.get("sequence"), item.get("scanCode"), item.get("missing"))
+                          for item in first_scans], [(1, "1", False), (None, "1.1", True)])
+        real_numbers = sorted(item["sequence"] for values in pages.values() for item in values
+                              if item.get("role") == "scan" and item.get("sequence"))
+        self.assertEqual(real_numbers, list(range(1, 22)))
+        self.assertEqual(len(SPREAD_SCANS), 14)
+        self.assertFalse(any(item.get("role") == "divider" for values in pages.values() for item in values))
 
     def test_import_makes_scans_and_editable_unicode_text(self):
         with tempfile.TemporaryDirectory() as folder:

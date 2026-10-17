@@ -3,7 +3,7 @@ import * as Y from 'yjs'
 const primitiveKeys = [
   'id', 'type', 'x', 'y', 'w', 'h', 'fontSize', 'fontFamily', 'color', 'background',
   'align', 'bold', 'italic', 'src', 'fit', 'shape', 'fill', 'stroke', 'strokeWidth', 'strokeStyle',
-  'locked', 'role', 'placeholder', 'sequence', 'cardIndex', 'sourceLabel',
+  'locked', 'role', 'placeholder', 'sequence', 'cardIndex', 'sourceLabel', 'scanCode', 'missing',
 ]
 
 export function elementFromJson(value) {

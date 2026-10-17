@@ -36,6 +36,14 @@ from .yandex_disk import YandexDiskApiDelivery, YandexDiskDelivery, YandexDiskDe
 cfg = settings()
 assets_root = cfg.storage_dir / "assets"
 releases_root = cfg.storage_dir / "releases"
+# Номера сканов в последней 4×8 таблице заказчика. Ячейка (1, 8)
+# содержит служебную увеличенную копию оборота и намеренно не импортируется.
+CUSTOMER_SCAN_CELLS = {
+    (0, 0): 1, (0, 2): 2, (0, 4): 3, (0, 5): 11, (0, 6): 4,
+    (1, 0): 17, (1, 1): 9, (1, 2): 18, (1, 3): 10, (1, 7): 12,
+    (2, 0): 5, (2, 1): 13, (2, 2): 6, (2, 4): 7, (2, 6): 8,
+    (3, 2): 19, (3, 3): 14, (3, 4): 20, (3, 5): 15, (3, 6): 21, (3, 7): 16,
+}
 
 
 def bootstrap_database() -> None:
@@ -136,7 +144,8 @@ def clean_pages(raw_pages: dict) -> dict:
                     continue
                 if not source and raw.get("role") != "scan":
                     continue
-                item.update(src=source[:600], fit="cover" if raw.get("fit") == "cover" else "contain")
+                item.update(src=source[:600], fit="cover" if raw.get("fit") == "cover" else "contain",
+                            missing=bool(raw.get("missing")))
             elif item["type"] in {"cover", "page-background"}:
                 item["color"] = str(raw.get("color") or "#ffffff")[:32]
             else:
@@ -148,8 +157,11 @@ def clean_pages(raw_pages: dict) -> dict:
                     strokeStyle=raw.get("strokeStyle") if raw.get("strokeStyle") in {"solid", "dashed", "dotted"} else "solid",
                 )
             item["locked"] = bool(raw.get("locked"))
-            if raw.get("role") in {"scan", "caption", "body", "outline", "divider"}:
+            if raw.get("role") in {"scan", "caption", "body", "outline", "divider",
+                                   "scan-divider", "caption-divider"}:
                 item["role"] = raw["role"]
+            if "scanCode" in raw:
+                item["scanCode"] = str(raw.get("scanCode") or "")[:24]
             if "placeholder" in raw:
                 item["placeholder"] = str(raw.get("placeholder") or "")[:300]
             if "sourceLabel" in raw:
@@ -523,6 +535,7 @@ async def import_docx_assets(project_id: int, file: UploadFile = File(...),
         raise HTTPException(400, "В DOCX нет таблиц")
     table = source.tables[-1]
     ordered = []
+    customer_table = len(table.rows) == 4 and len(table.columns) == 8
     occurrences = Counter()
     cells = []
     for row_index, row in enumerate(table.rows):
@@ -542,13 +555,16 @@ async def import_docx_assets(project_id: int, file: UploadFile = File(...),
             extension = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}.get(content_type)
             if not extension:
                 continue
+            if customer_table and (row_index, column_index) not in CUSTOMER_SCAN_CELLS:
+                continue
             ordered.append((row_index, column_index, label, part.blob, extension))
     if not ordered:
         raise HTTPException(400, "В последней таблице не найдено изображений")
     folder = assets_root / str(project_id)
     folder.mkdir(parents=True, exist_ok=True)
     result = []
-    for number, (row_index, column_index, label, blob, extension) in enumerate(ordered, 1):
+    for position, (row_index, column_index, label, blob, extension) in enumerate(ordered, 1):
+        number = CUSTOMER_SCAN_CELLS[(row_index, column_index)] if customer_table else position
         name = f"table-{number:03d}-{uuid.uuid4().hex}{extension}"
         (folder / name).write_bytes(blob)
         result.append({"number": number, "row": row_index + 1, "column": column_index + 1,

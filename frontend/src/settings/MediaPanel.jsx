@@ -6,7 +6,7 @@ import { audioEngine } from '../audio/audioEngine'
 const AUDIO_EXTS = ['wav', 'mp3', 'ogg', 'flac', 'm4a']
 
 const PDF_ITEMS = [1, 2, 3, 4].map((n) => ({
-  kind: 'pdf', slot: `pdf${n}`, label: `Текст ${n}`, exts: ['pdf'],
+  kind: 'pdf', slot: `pdf${n}`, label: `Документ ${n}`, exts: ['pdf'],
 }))
 const AUDIO_ITEMS = [
   ...[1, 2, 3, 4].map((n) => ({
@@ -32,6 +32,7 @@ export function MediaPanel({ serverHost, media: mediaFromState }) {
   const [unsupported, setUnsupported] = useState(false)
   const [busy, setBusy] = useState(null)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const fileInputRef = useRef(null)
   const pendingRef = useRef(null)
 
@@ -57,11 +58,18 @@ export function MediaPanel({ serverHost, media: mediaFromState }) {
   const send = async (item, url, init) => {
     setBusy(item.slot)
     setError('')
+    setNotice('')
     try {
       const r = await fetch(url, init)
       const data = await r.json().catch(() => ({}))
       if (!r.ok) throw new Error(data?.detail || `HTTP ${r.status}`)
       applyResult(data)
+      if (item.slot === 'sync') {
+        const release = data?.installedRelease
+        setNotice(release?.status === 'already-current'
+          ? `Уже установлена актуальная версия ${release.releaseId}`
+          : `Установлена свежая версия ${release?.releaseId || ''}`)
+      }
     } catch (e) {
       setError(`${item.label}: ${e.message || e}`)
     } finally {
@@ -126,6 +134,14 @@ export function MediaPanel({ serverHost, media: mediaFromState }) {
     )
   }
 
+  const syncDocuments = async () => {
+    await send(
+      { slot: 'sync', label: 'Синхронизация документов' },
+      apiUrl('/api/media/sync', serverHost),
+      { method: 'POST' },
+    )
+  }
+
   const preview = (item) => {
     if (item.slot === 'vibro_final') audioEngine.playVibroFinal()
     else audioEngine.playCircle(Number(item.slot.replace('circle', '')))
@@ -143,9 +159,10 @@ export function MediaPanel({ serverHost, media: mediaFromState }) {
   const row = (item) => {
     const info = media[item.kind === 'pdf' ? 'pdfs' : 'audio']?.[item.slot]
     const isBusy = busy === item.slot
+    const label = item.kind === 'pdf' ? (media.pdfTitles?.[item.slot] || item.label) : item.label
     return (
       <div key={item.slot} style={{ display: 'flex', gap: 8, alignItems: 'center', minHeight: 28 }}>
-        <span style={{ width: 110, fontWeight: 600 }}>{item.label}</span>
+        <span style={{ width: 160, fontWeight: 600 }}>{label}</span>
         <span style={{ flex: 1, fontFamily: 'monospace', fontSize: 12, opacity: info ? 1 : 0.6 }}>
           {info
             ? `${info.file} · ${fmtSize(info.size)} · ${fmtTime(info.mtime)}${
@@ -168,16 +185,25 @@ export function MediaPanel({ serverHost, media: mediaFromState }) {
 
   return (
     <div style={{ margin: '12px 0', padding: 12, border: '1px solid #444', borderRadius: 8 }}>
-      <div style={{ fontWeight: 700, marginBottom: 8 }}>Тексты и звуки</div>
+      <div style={{ fontWeight: 700, marginBottom: 8 }}>Документы и звуки</div>
       <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={onFileInput} />
 
       <div style={{ fontSize: 13, opacity: 0.8, marginBottom: 4 }}>
-        Тексты — {media.dirs?.pdfs}
+        Документы — {media.dirs?.pdfs}
       </div>
       <div style={{ display: 'grid', gap: 4, marginBottom: 12 }}>{PDF_ITEMS.map(row)}</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+        <button onClick={syncDocuments} disabled={busy === 'sync'} style={{ fontWeight: 700 }}>
+          {busy === 'sync' ? 'Синхронизируем…' : 'Синхронизировать все документы'}
+        </button>
+        <span style={{ fontSize: 12, opacity: 0.75 }}>
+          Источник: {media.sync?.path || 'не настроен'}
+          {media.sync?.installedReleaseId ? ` · установлена ${media.sync.installedReleaseId}` : ''}
+        </span>
+      </div>
       {media.template?.available && (
         <button onClick={installTemplate} disabled={busy === 'template'} style={{ marginBottom: 12, fontWeight: 700 }}>
-          {busy === 'template' ? 'Устанавливаем…' : 'Установить шаблон 2×2 × 14 во все четыре текста'}
+          {busy === 'template' ? 'Устанавливаем…' : 'Установить шаблон 2×2 × 14 во все четыре документа'}
         </button>
       )}
 
@@ -187,9 +213,12 @@ export function MediaPanel({ serverHost, media: mediaFromState }) {
       <div style={{ display: 'grid', gap: 4 }}>{AUDIO_ITEMS.map(row)}</div>
 
       {error && <div style={{ color: '#e88', marginTop: 8, fontSize: 13 }}>{error}</div>}
+      {notice && !error && <div style={{ color: '#8d8', marginTop: 8, fontSize: 13 }}>{notice}</div>}
 
       <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
-        Выбранный файл копируется на место pdfN.pdf / circleN / vibro_final. Выбирать можно любой
+        Кнопка синхронизации читает current.json из папки «Релизы» на диске Z:, проверяет контрольные
+        суммы и атомарно устанавливает сразу четыре опубликованных PDF. Предыдущий комплект сохраняется
+        в резервной папке. Выбранный вручную файл копируется на место pdfN.pdf / circleN / vibro_final. Выбирать можно любой
         файл на диске — диалог просто открывается в текущей папке. Клиенты подхватывают новый текст
         со следующего показа, звук — с ближайшей рассылки состояния. Прослушивание вибро требует
         включённого канала «Вибро-финал». Менять файлы лучше в idle: пока текст отдаётся клиенту,

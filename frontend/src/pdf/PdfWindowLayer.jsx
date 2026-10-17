@@ -2,12 +2,10 @@ import { useEffect, useMemo, useState } from 'react'
 import { pdfUrl } from '../net/urls'
 import { usePdfMeta } from './pdfMeta'
 import { PdfDocument } from './PdfDocument'
-import { PdfEditorToolbar, usePdfEditor } from './PdfEditor'
 
-// pdf2.pdf -> «Текст 2». Заказчик говорит «текстами», а не «пдфами».
-function tabLabel(file) {
+function tabLabel(file, titles) {
   const m = /^pdf(\d+)\.pdf$/i.exec(String(file || ''))
-  return m ? `Текст ${m[1]}` : String(file || '').replace(/\.pdf$/i, '')
+  return m ? (titles?.[`pdf${m[1]}`] || `Документ ${m[1]}`) : String(file || '').replace(/\.pdf$/i, '')
 }
 
 export function PdfWindowLayer({ state, myRole, serverHost = '' }) {
@@ -17,7 +15,6 @@ export function PdfWindowLayer({ state, myRole, serverHost = '' }) {
 
   // Локальный выбор вкладки посетителем. Сервер задаёт только дефолт.
   const [override, setOverride] = useState(null)
-  const [editingFile, setEditingFile] = useState(null)
 
   // Новая волна / новое оседание -> возвращаемся к серверной вкладке.
   useEffect(() => {
@@ -29,23 +26,8 @@ export function PdfWindowLayer({ state, myRole, serverHost = '' }) {
   const meta = usePdfMeta(serverHost, token)
 
   const tabs = Array.isArray(win?.tabs) ? win.tabs : []
-  const active = editingFile || (override && tabs.includes(override) ? override : serverActive)
-  const slot = String(active || '').replace(/\.pdf$/i, '')
-  const editorRevision = state?.pdfEditor?.[slot]?.revision
-  const editor = usePdfEditor(slot || null, serverHost, editorRevision, myRole)
-  const visibleEditor = {
-    ...editor,
-    setEditMode: (enabled) => {
-      if (enabled) setEditingFile(active)
-      else setEditingFile(null)
-      editor.setEditMode(enabled)
-    },
-    exitEdit: async () => {
-      const ok = await editor.exitEdit()
-      if (ok) setEditingFile(null)
-      return ok
-    },
-  }
+  const active = override && tabs.includes(override) ? override : serverActive
+  const titles = state?.media?.pdfTitles
 
   // useMemo обязателен: если бы v вычислялся заново на каждый рендер
   // (например, через Date.now()), PdfDocument перезагружал бы файл бесконечно.
@@ -84,8 +66,7 @@ export function PdfWindowLayer({ state, myRole, serverHost = '' }) {
           {tabs.map((t) => (
             <button
               key={t}
-              onClick={() => !editor.editMode && setOverride(t)}
-              disabled={editor.editMode}
+              onClick={() => setOverride(t)}
               style={{
                 fontWeight: t === active ? 700 : 400,
                 background: t === active ? '#2d6' : '#444',
@@ -97,19 +78,15 @@ export function PdfWindowLayer({ state, myRole, serverHost = '' }) {
                 userSelect: 'none',
               }}
             >
-              {tabLabel(t)}
+              {tabLabel(t, titles)}
             </button>
           ))}
         </div>
       )}
 
-      {active && <PdfEditorToolbar editor={visibleEditor} />}
-
       <div style={{ flex: '1 1 auto', minHeight: 0 }}>
         {activeUrl ? (
-          <PdfDocument key={active} url={activeUrl} resetKey={token}
-            editor={{ pages: editor.doc.pages, editMode: editor.editMode, selected: editor.selected,
-              assetOrigin: editor.assetOrigin, onSelect: editor.select, onChange: editor.update }} />
+          <PdfDocument key={active} url={activeUrl} resetKey={token} />
         ) : null}
       </div>
     </div>

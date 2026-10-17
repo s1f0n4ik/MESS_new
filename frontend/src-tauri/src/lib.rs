@@ -384,7 +384,7 @@ async fn open_pdf_window(
     let url = WebviewUrl::App(format!("index.html?{}", query).into());
 
     let win = WebviewWindowBuilder::new(&app, &label, url)
-        .title("PDF")
+        .title("Inheritance")
         .inner_size(g.w as f64 / scale, g.h as f64 / scale)
         .position(g.x as f64 / scale, g.y as f64 / scale)
         .decorations(false)
@@ -537,7 +537,7 @@ pub fn run() {
                 "main",
                 WebviewUrl::App(format!("index.html?{}", query).into()),
             )
-            .title("Heritage")
+            .title("Inheritance")
             .inner_size(1600.0, 900.0)
             .fullscreen(launch.fullscreen)
             .zoom_hotkeys_enabled(false)

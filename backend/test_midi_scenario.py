@@ -163,6 +163,15 @@ class MidiScenarioTests(unittest.IsolatedAsyncioTestCase):
         for role in main.ROLES:
             self.assertFalse(any(main.STATE["flippedCardsByRole"][role][str(i)] for i in range(8)))
 
+    async def test_manual_check_opens_each_computer_own_document(self):
+        main.hard_reset({"type": "manual_documents_test"})
+        for index, role in enumerate(main.ROLES, 1):
+            await main.apply_action("open_role_popup", {"role": role})
+            self.assertEqual(win(role)["activeTab"], f"pdf{index}.pdf")
+            self.assertEqual(win(role)["tabs"], [f"pdf{index}.pdf"])
+        for index, role in enumerate(main.ROLES, 1):
+            self.assertEqual(win(role)["activeTab"], f"pdf{index}.pdf")
+
 
 class ClickCounterTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

@@ -35,7 +35,7 @@ import scenario_log
 # ---------------------------------------------------------------------------
 ROLES = ["pc1", "pc2", "pc3", "pc4"]
 CLICK_THRESHOLD = 17
-BUILD_NAME = "2026-09-26-shared-editor-template-v7"
+BUILD_NAME = "2026-10-13-document-tabs-v9"
 PDF_TEMPLATE_NAME = "Postcards_2x2_template_14_blocks.pdf"
 
 
@@ -381,6 +381,25 @@ def set_windows_sweep(open_roles_ordered, wave_n):
         else:
             wins[r] = {"visible": False, "tabs": [], "activeTab": None, "token": None}
     STATE["pdfWindowsByRole"] = wins
+
+
+def set_windows_manual(open_roles):
+    """Ручная проверка: каждый ПК показывает предназначенный ему документ.
+
+    В отличие от MIDI-sweep здесь номер документа определяется ролью ПК,
+    а не текущим кругом сценария.
+    """
+    s = STATE["scenario"]
+    open_set = set(open_roles)
+    STATE["pdfWindowsByRole"] = {
+        role: {
+            "visible": role in open_set,
+            "tabs": [pdf_file_for_wave(index)] if role in open_set else [],
+            "activeTab": pdf_file_for_wave(index) if role in open_set else None,
+            "token": f'{s["popupEpoch"]}:{role}:manual{index}' if role in open_set else None,
+        }
+        for index, role in enumerate(ROLES, 1)
+    }
 
 
 def set_windows_settled(settled_roles_ordered, wave_n):
@@ -816,7 +835,7 @@ def open_role(role: str, source: dict | None = None):
         reset_open_roles()
         s["openRoles"][target] = True
         s["currentRole"] = target
-        set_windows_sweep([target], s["waveIndex"])
+        set_windows_manual([target])
         recompute_wave_settled()
         sync_pdf_window()
         return
@@ -834,7 +853,7 @@ def open_role(role: str, source: dict | None = None):
     s["openRoles"][target] = True
     s["currentRole"] = target
     opened = [r for r in ROLES if s["openRoles"].get(r)]
-    set_windows_sweep(opened, s.get("waveIndex") or 1)
+    set_windows_manual(opened)
     recompute_wave_settled()
     sync_pdf_window()
 
@@ -854,7 +873,7 @@ def close_role(role: str, source: dict | None = None):
         s["phase"] = PHASE_MANUAL
         clear_scenario_timers()
         opened = [r for r in ROLES if s["openRoles"].get(r)]
-        set_windows_sweep(opened, s.get("waveIndex") or 1)
+        set_windows_manual(opened)
         recompute_wave_settled()
         sync_pdf_window()
 

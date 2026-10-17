@@ -148,7 +148,8 @@
 
 .pdf-library-editor { position: fixed; inset: 0; z-index: 95; display: flex; flex-direction: column; background: #111; }
 .pdf-library-editor__tabs { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 7px; background: #222; }
-.pdf-library-editor__tabs span { margin-left: auto; font-weight: 700; }
+.pdf-library-editor__title { margin-left: auto; display: flex; align-items: center; gap: 6px; color: #eee; font: 13px Arial, sans-serif; }
+.pdf-library-editor__title input { width: 210px; padding: 7px 9px; border: 1px solid #666; border-radius: 4px; background: #111; color: #fff; }
 .pdf-library-editor__tabs button { border: 1px solid #666; border-radius: 4px; padding: 7px 12px; background: #444; color: #fff; }
 .pdf-library-editor__tabs button.is-active { background: #2d6; color: #000; font-weight: 700; }
 .pdf-library-editor__tabs button:disabled { opacity: 0.55; }

@@ -40,19 +40,27 @@ export function usePdfWindowHotkeys(isPdfWindow) {
 export function PdfMinimizeButton() {
   if (!window.__TAURI__) return null
   return (
-    <button
-      onClick={minimizeThisPdfWindow}
-      title="Свернуть (Esc или P). Вернуть — клавиша P"
-      style={{
-        position: 'fixed', top: 8, right: 8, zIndex: 1000,
-        width: 34, height: 28, lineHeight: '24px', fontSize: 18,
-        background: 'rgba(0,0,0,.45)', color: '#fff', border: '1px solid rgba(255,255,255,.35)',
-        borderRadius: 6, cursor: 'pointer', opacity: 0.55,
-      }}
-      onMouseEnter={(e) => (e.currentTarget.style.opacity = 1)}
-      onMouseLeave={(e) => (e.currentTarget.style.opacity = 0.55)}
-    >
-      —
-    </button>
+    <>
+      <div style={{
+        position: 'fixed', top: 8, right: 52, zIndex: 999, pointerEvents: 'none',
+        height: 28, display: 'flex', alignItems: 'center', padding: '0 10px',
+        borderRadius: 6, background: 'rgba(0,0,0,.45)', color: '#fff',
+        font: '600 13px Arial, sans-serif', opacity: 0.72,
+      }}>Inheritance</div>
+      <button
+        onClick={minimizeThisPdfWindow}
+        title="Свернуть (Esc или P). Вернуть — клавиша P"
+        style={{
+          position: 'fixed', top: 8, right: 8, zIndex: 1000,
+          width: 34, height: 28, lineHeight: '24px', fontSize: 18,
+          background: 'rgba(0,0,0,.45)', color: '#fff', border: '1px solid rgba(255,255,255,.35)',
+          borderRadius: 6, cursor: 'pointer', opacity: 0.55,
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.opacity = 1)}
+        onMouseLeave={(e) => (e.currentTarget.style.opacity = 0.55)}
+      >
+        —
+      </button>
+    </>
   )
 }

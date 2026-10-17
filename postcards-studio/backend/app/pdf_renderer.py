@@ -94,6 +94,9 @@ def render_document(template: Path, content: dict, assets_root: Path, output: Pa
             elif kind == "cover":
                 page.draw_rect(rect, color=None, fill=_color(item.get("color"), (1, 1, 1)), overlay=True)
             elif kind == "image":
+                if item.get("missing"):
+                    page.draw_rect(rect, color=None, fill=(0, 0, 0), overlay=True)
+                    continue
                 source = str(item.get("src") or "")
                 marker = "/assets/"
                 relative = source.split(marker, 1)[-1] if marker in source else source
