@@ -54,6 +54,18 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
     requestAnimationFrame(() => { target.selectionStart = target.selectionEnd = start + 2 })
   }
 
+  const pasteFormattedText = (event, item) => {
+    if (item.role !== 'body') return
+    event.preventDefault()
+    const target = event.currentTarget
+    const start = target.selectionStart
+    const end = target.selectionEnd
+    const pasted = event.clipboardData.getData('text/plain').replace(/\r\n?/g, '\n')
+    const formatted = pasted.split('\n').map((line) => !line.trim() || line.startsWith('\u2003') ? line : `\u2003${line.trimStart()}`).join('\n')
+    onChange(number, item.id, { text: `${item.text.slice(0, start)}${formatted}${item.text.slice(end)}` })
+    requestAnimationFrame(() => { target.selectionStart = target.selectionEnd = start + formatted.length })
+  }
+
   return <section className="pdf-page-wrap">
     <div className="page-label">{number}</div>
     <div className="pdf-page" ref={pageRef} style={{ aspectRatio: `1 / ${ratio}` }} onPointerDown={() => onSelect(number, null)}>
@@ -70,6 +82,7 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
           }}
             onChange={(e) => onChange(number, item.id, { text: e.target.value })}
             onKeyDown={(e) => startIndentedParagraph(e, item)}
+            onPaste={(e) => pasteFormattedText(e, item)}
             style={{ fontSize: `${Math.max(10, item.fontSize * .55)}px`, color: item.color, background: item.background,
                      fontFamily: item.fontFamily || 'Times New Roman, serif', fontWeight: item.bold ? 700 : 400,
                      fontStyle: item.italic ? 'italic' : 'normal', textAlign: item.align === 'justify' ? 'justify' : item.align }} />}

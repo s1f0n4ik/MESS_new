@@ -287,7 +287,7 @@ def find_document(db: Session, project_id: int, slot: str) -> Document:
 
 
 def parse_collaboration_name(value: str) -> tuple[int, str]:
-    match = re.fullmatch(r"project-(\d+)-(pdf[1-4])-layout-v3", value)
+    match = re.fullmatch(r"project-(\d+)-(pdf[1-4])-layout-v4", value)
     if not match:
         raise HTTPException(400, "Некорректное имя совместного документа")
     return int(match.group(1)), match.group(2)

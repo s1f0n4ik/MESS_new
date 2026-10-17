@@ -11,7 +11,7 @@ const dataDir = process.env.COLLABORATION_DATA_DIR || './data'
 await mkdir(dataDir, { recursive: true })
 
 function safeName(name) {
-  if (!/^project-\d+-pdf[1-4]-layout-v3$/.test(name)) throw new Error('Некорректное имя документа')
+  if (!/^project-\d+-pdf[1-4]-layout-v4$/.test(name)) throw new Error('Некорректное имя документа')
   return name
 }
 

@@ -51,6 +51,13 @@ class EditableTemplateTests(unittest.TestCase):
         self.assertEqual(real_numbers, list(range(1, 22)))
         self.assertEqual(len(SPREAD_SCANS), 14)
         self.assertFalse(any(item.get("role") == "divider" for values in pages.values() for item in values))
+        outlines = [item for item in pages["1"] if item.get("role") == "outline"]
+        self.assertAlmostEqual(outlines[0]["x"] + outlines[0]["w"], outlines[1]["x"])
+        self.assertTrue(all(item["strokeStyle"] == "dashed" for item in outlines))
+        dividers = [item for item in pages["1"] if item.get("role") in {"scan-divider", "caption-divider"}]
+        self.assertTrue(all(item["strokeStyle"] == "dashed" for item in dividers))
+        self.assertTrue(all(item.get("placeholder", "") == "" for values in pages.values()
+                            for item in values if item.get("type") == "text"))
 
     def test_import_makes_scans_and_editable_unicode_text(self):
         with tempfile.TemporaryDirectory() as folder:

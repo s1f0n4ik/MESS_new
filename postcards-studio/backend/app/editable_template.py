@@ -72,38 +72,43 @@ def blank_editable_layout(page_count: int = PAGE_COUNT) -> dict[str, list[dict]]
         for column in range(2):
             card_index = ((page - 1) // 2) * 2 + column + 1
             scan_number, scan_code = SPREAD_SCANS[(page - 1) // 2][column]
-            x = 0.018 if column == 0 else 0.510
+            # Both page halves meet exactly at the centre, as in the approved
+            # Illustrator sample. This avoids two parallel contours and makes
+            # the scan/caption/body sections one continuous column grid.
+            x = 0.018 if column == 0 else 0.500
+            column_width = 0.482
+            inner_width = column_width - 0.010
             items.append(_item(
-                f"outline-{page}-{column}", "shape", x, 0.032, 0.472, 0.936,
+                f"outline-{page}-{column}", "shape", x, 0.032, column_width, 0.936,
                 shape="rectangle", fill="transparent", stroke="#777777", strokeWidth=1,
-                strokeStyle="dotted", locked=True, role="outline", cardIndex=card_index,
+                strokeStyle="dashed", locked=True, role="outline", cardIndex=card_index,
             ))
             if page % 2:
                 items.extend([
                     _item(
-                        f"scan-{page}-{column}", "image", x + 0.058, 0.034, 0.358, 0.337,
+                        f"scan-{page}-{column}", "image", x + 0.062, 0.034, 0.358, 0.337,
                         src="", fit="contain", locked=True, role="scan", sequence=scan_number,
                         scanCode=scan_code, missing=scan_number is None, cardIndex=card_index,
                     ),
                     _item(
-                        f"scan-divider-{page}-{column}", "shape", x + 0.005, 0.382, 0.462, 0.006,
+                        f"scan-divider-{page}-{column}", "shape", x + 0.005, 0.382, inner_width, 0.006,
                         shape="line", fill="transparent", stroke="#777777", strokeWidth=1,
-                        strokeStyle="solid", locked=True, role="scan-divider", cardIndex=card_index,
+                        strokeStyle="dashed", locked=True, role="scan-divider", cardIndex=card_index,
                     ),
                     _item(
-                        f"caption-{page}-{column}", "text", x + 0.005, 0.393, 0.462, 0.078,
+                        f"caption-{page}-{column}", "text", x + 0.005, 0.393, inner_width, 0.078,
                         text="", placeholder="", fontSize=16,
                         fontFamily="Times New Roman", color="#111111", background="transparent",
                         align="right", bold=False, italic=False, locked=True, role="caption",
                         cardIndex=card_index,
                     ),
                     _item(
-                        f"caption-divider-{page}-{column}", "shape", x + 0.005, 0.476, 0.462, 0.006,
+                        f"caption-divider-{page}-{column}", "shape", x + 0.005, 0.476, inner_width, 0.006,
                         shape="line", fill="transparent", stroke="#777777", strokeWidth=1,
-                        strokeStyle="solid", locked=True, role="caption-divider", cardIndex=card_index,
+                        strokeStyle="dashed", locked=True, role="caption-divider", cardIndex=card_index,
                     ),
                     _item(
-                        f"body-{page}-{column}", "text", x + 0.005, 0.489, 0.462, 0.473,
+                        f"body-{page}-{column}", "text", x + 0.005, 0.489, inner_width, 0.473,
                         text="", placeholder="", fontSize=15, fontFamily="Times New Roman",
                         color="#111111", background="transparent", align="left", bold=False,
                         italic=False, locked=True, role="body", cardIndex=card_index,
@@ -111,7 +116,7 @@ def blank_editable_layout(page_count: int = PAGE_COUNT) -> dict[str, list[dict]]
                 ])
             else:
                 items.append(_item(
-                    f"body-{page}-{column}", "text", x + 0.005, 0.025, 0.462, 0.935,
+                    f"body-{page}-{column}", "text", x + 0.005, 0.025, inner_width, 0.935,
                     text="", placeholder="", fontSize=15,
                     fontFamily="Times New Roman", color="#111111", background="transparent",
                     align="left", bold=False, italic=False, locked=True, role="body",
