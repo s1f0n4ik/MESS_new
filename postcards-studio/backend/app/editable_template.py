@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 
 import pymupdf as fitz
+from docx import Document as WordDocument
+from docx.oxml.ns import qn
 
 
 PAGE_COUNT = 28
@@ -32,6 +35,20 @@ SPREAD_SCANS = (
     ((8, "8"), (None, "8.1")),
     ((21, "8.21"), (16, "8.2")),
 )
+CUSTOMER_SCAN_CELLS = {
+    (0, 0): 1, (0, 2): 2, (0, 4): 3, (0, 5): 11, (0, 6): 4,
+    (1, 0): 17, (1, 1): 9, (1, 2): 18, (1, 3): 10, (1, 7): 12,
+    (2, 0): 5, (2, 1): 13, (2, 2): 6, (2, 4): 7, (2, 6): 8,
+    (3, 2): 19, (3, 3): 14, (3, 4): 20, (3, 5): 15, (3, 6): 21, (3, 7): 16,
+}
+# Соответствие старого 28-страничного pdf2.pdf утверждённым номерам.
+# Скан 20 отсутствовал в старом PDF; скан 21, наоборот, берётся из него,
+# потому что в DOCX для «Греков, Тачанка» осталась только подпись.
+LEGACY_CARD_BY_SCAN = {
+    17: 1, 9: 2, 1: 3, 5: 5, 13: 6, 2: 7, 18: 9, 10: 10,
+    6: 11, 19: 13, 14: 14, 3: 15, 11: 16, 7: 17, 21: 19,
+    15: 20, 4: 21, 12: 24, 16: 26, 8: 27,
+}
 
 
 def _item(item_id: str, item_type: str, x: float, y: float, w: float, h: float, **extra) -> dict:
@@ -173,15 +190,107 @@ def import_legacy_pdf(source_pdf: Path, assets_root: Path, project_id: int = 1) 
             # sides remain generated black placeholders instead of bitmap files.
             image_item = next(item for item in pages[str(page_number)]
                               if item.get("role") == "scan" and item.get("cardIndex") == card_index)
-            if image_item.get("missing"):
-                continue
             clip = fitz.Rect(x0 + 90, 27, x0 + 518, 313)
             pixmap = page.get_pixmap(matrix=fitz.Matrix(1.8, 1.8), clip=clip, alpha=False)
+            pixmap.save(asset_folder / f"legacy-card-{card_index:02d}.png")
+            if image_item.get("missing"):
+                continue
             name = f"scan-{int(image_item['sequence']):02d}.png"
             pixmap.save(asset_folder / name)
             image_item["src"] = f"/assets/{project_id}/starter-v1/{name}"
             image_item["sourceLabel"] = caption.replace("\n", " ")
     document.close()
+    return pages
+
+
+def extract_customer_scans(source_docx: Path, assets_root: Path, project_id: int = 1) -> dict[int, dict]:
+    source = WordDocument(source_docx)
+    if not source.tables:
+        raise ValueError("В DOCX нет таблиц")
+    table = source.tables[-1]
+    if len(table.rows) != 4 or len(table.columns) != 8:
+        raise ValueError("Ожидалась утверждённая таблица 4×8")
+    occurrences: Counter[str] = Counter()
+    cells = []
+    for row_index, row in enumerate(table.rows):
+        for column_index, cell in enumerate(row.cells):
+            relation_ids = [node.get(qn("r:embed")) for node in cell._tc.xpath(".//a:blip")]
+            occurrences.update(relation_ids)
+            cells.append((row_index, column_index, " ".join(cell.text.split()), relation_ids))
+    folder = Path(assets_root) / str(project_id) / "starter-v2"
+    folder.mkdir(parents=True, exist_ok=True)
+    result: dict[int, dict] = {}
+    seen = set()
+    for row_index, column_index, label, relation_ids in cells:
+        number = CUSTOMER_SCAN_CELLS.get((row_index, column_index))
+        if not number:
+            continue
+        for relation_id in relation_ids:
+            if not relation_id or occurrences[relation_id] > 1 or relation_id in seen:
+                continue
+            seen.add(relation_id)
+            part = source.part.related_parts.get(relation_id)
+            content_type = getattr(part, "content_type", "")
+            extension = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}.get(content_type)
+            if not extension:
+                continue
+            name = f"scan-{number:02d}{extension}"
+            path = folder / name
+            path.write_bytes(part.blob)
+            result[number] = {"path": path, "url": f"/assets/{project_id}/starter-v2/{name}", "label": label}
+            break
+    required = set(range(1, 21))
+    if not required.issubset(result):
+        raise ValueError(f"В таблице найдены не все обязательные сканы 1–20: {sorted(result)}")
+    return result
+
+
+def import_customer_layout(source_pdf: Path, source_docx: Path, assets_root: Path,
+                           project_id: int = 1) -> dict[str, list[dict]]:
+    """Rebuild the editable layout, preserving legacy text and placing scans by approved numbering."""
+    legacy = import_legacy_pdf(source_pdf, assets_root, project_id)
+    scans = extract_customer_scans(source_docx, assets_root, project_id)
+    legacy_folder = Path(assets_root) / str(project_id) / "starter-v1"
+    if 21 not in scans:
+        source = legacy_folder / f"legacy-card-{LEGACY_CARD_BY_SCAN[21]:02d}.png"
+        target_folder = Path(assets_root) / str(project_id) / "starter-v2"
+        target = target_folder / "scan-21.png"
+        target.write_bytes(source.read_bytes())
+        scans[21] = {"path": target, "url": f"/assets/{project_id}/starter-v2/scan-21.png",
+                     "label": "А. М. Греков. Тачанка"}
+    pages = blank_editable_layout()
+
+    def copy_text(old_card: int, new_card: int) -> None:
+        old_spread = (old_card - 1) // 2
+        new_spread = (new_card - 1) // 2
+        for old_page, new_page in ((old_spread * 2 + 1, new_spread * 2 + 1),
+                                   (old_spread * 2 + 2, new_spread * 2 + 2)):
+            for role in ("caption", "body"):
+                old_item = next((item for item in legacy[str(old_page)]
+                                 if item.get("role") == role and item.get("cardIndex") == old_card), None)
+                new_item = next((item for item in pages[str(new_page)]
+                                 if item.get("role") == role and item.get("cardIndex") == new_card), None)
+                if old_item and new_item:
+                    new_item["text"] = old_item.get("text", "")
+
+    for values in pages.values():
+        for item in values:
+            if item.get("role") != "scan" or item.get("missing"):
+                continue
+            number = int(item["sequence"])
+            if number not in scans:
+                continue
+            item["src"] = scans[number]["url"]
+            item["sourceLabel"] = scans[number]["label"]
+            old_card = LEGACY_CARD_BY_SCAN.get(number)
+            if old_card:
+                copy_text(old_card, int(item["cardIndex"]))
+                old_pair = old_card + 1 if old_card % 2 else old_card - 1
+                target_pair = int(item["cardIndex"]) + 1 if int(item["cardIndex"]) % 2 else int(item["cardIndex"]) - 1
+                target_pair_item = next((candidate for candidate in values
+                                         if candidate.get("role") == "scan" and candidate.get("cardIndex") == target_pair), None)
+                if target_pair_item and target_pair_item.get("missing"):
+                    copy_text(old_pair, target_pair)
     return pages
 
 

@@ -9,18 +9,24 @@ from sqlalchemy import select
 
 from .config import settings
 from .db import Document, DocumentRevision, DocumentTemplate, SessionLocal, init_db
-from .editable_template import DOCUMENT_TITLES, import_legacy_pdf, without_body_text
+from .editable_template import DOCUMENT_TITLES, import_customer_layout, import_legacy_pdf, without_body_text
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Create editable starter documents from the legacy PDF")
     parser.add_argument("--source-pdf", type=Path, required=True)
+    parser.add_argument("--source-docx", type=Path,
+                        help="утверждённая таблица 4×8; расставляет сканы 1–21 по новой нумерации")
     parser.add_argument("--project-id", type=int, default=1)
     parser.add_argument("--apply", action="store_true", help="write to the database; otherwise only validate")
     args = parser.parse_args()
 
     cfg = settings()
-    pages_with_formal_analysis = import_legacy_pdf(args.source_pdf, cfg.storage_dir / "assets", args.project_id)
+    pages_with_formal_analysis = (
+        import_customer_layout(args.source_pdf, args.source_docx, cfg.storage_dir / "assets", args.project_id)
+        if args.source_docx else
+        import_legacy_pdf(args.source_pdf, cfg.storage_dir / "assets", args.project_id)
+    )
     blank_body_pages = without_body_text(pages_with_formal_analysis)
     print(json.dumps({
         "projectId": args.project_id,

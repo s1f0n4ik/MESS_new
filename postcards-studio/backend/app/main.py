@@ -25,6 +25,7 @@ from .config import settings
 from .db import (Document, DocumentRevision, DocumentTemplate, Project, Release,
                  SessionLocal, User, init_db, session_scope)
 from .pdf_renderer import publish_release, render_document
+from .editable_template import CUSTOMER_SCAN_CELLS
 from .schemas import (CollaborationAuthBody, CollaborationSnapshotBody, CreateUserBody,
                       LoginBody, RenameDocumentBody, RestoreBody, SaveDocumentBody,
                       SaveTemplateBody)
@@ -38,12 +39,6 @@ assets_root = cfg.storage_dir / "assets"
 releases_root = cfg.storage_dir / "releases"
 # Номера сканов в последней 4×8 таблице заказчика. Ячейка (1, 8)
 # содержит служебную увеличенную копию оборота и намеренно не импортируется.
-CUSTOMER_SCAN_CELLS = {
-    (0, 0): 1, (0, 2): 2, (0, 4): 3, (0, 5): 11, (0, 6): 4,
-    (1, 0): 17, (1, 1): 9, (1, 2): 18, (1, 3): 10, (1, 7): 12,
-    (2, 0): 5, (2, 1): 13, (2, 2): 6, (2, 4): 7, (2, 6): 8,
-    (3, 2): 19, (3, 3): 14, (3, 4): 20, (3, 5): 15, (3, 6): 21, (3, 7): 16,
-}
 
 
 def bootstrap_database() -> None:
