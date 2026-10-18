@@ -3,6 +3,7 @@ import * as pdfjsLib from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { authHeaders } from './api'
 import { STROKE_DASHARRAYS } from './strokeStyles'
+import { pdfTextPreviewStyle } from './textPreview'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
 
@@ -13,6 +14,7 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
   const canvasRef = useRef(null)
   const pageRef = useRef(null)
   const [ratio, setRatio] = useState(1.414)
+  const [pageWidth, setPageWidth] = useState(TEMPLATE_WIDTH_PT)
 
   useEffect(() => {
     let cancelled = false
@@ -20,6 +22,7 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
       if (cancelled) return
       const viewport = page.getViewport({ scale: 1 })
       const width = Math.min(1120, pageRef.current?.clientWidth || 920)
+      setPageWidth(width)
       const scale = width / viewport.width
       const renderViewport = page.getViewport({ scale })
       setRatio(renderViewport.height / renderViewport.width)
@@ -32,6 +35,13 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
     })
     return () => { cancelled = true }
   }, [number, pdf])
+
+  useEffect(() => {
+    if (!pageRef.current || typeof ResizeObserver === 'undefined') return undefined
+    const observer = new ResizeObserver(([entry]) => setPageWidth(entry.contentRect.width))
+    observer.observe(pageRef.current)
+    return () => observer.disconnect()
+  }, [])
 
   const pointerStart = (event, item, mode) => {
     event.preventDefault(); event.stopPropagation(); onSelect(number, item.id)
@@ -118,9 +128,7 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
             onChange={(e) => onChange(number, item.id, { text: e.target.value })}
             onKeyDown={(e) => startIndentedParagraph(e, item)}
             onPaste={(e) => pasteFormattedText(e, item)}
-            style={{ fontSize: `${Math.max(10, item.fontSize * .55)}px`, color: item.color, background: item.background,
-                     fontFamily: item.fontFamily || 'Times New Roman, serif', fontWeight: item.bold ? 700 : 400,
-                     fontStyle: item.italic ? 'italic' : 'normal', textAlign: item.align === 'justify' ? 'justify' : item.align }} />}
+            style={pdfTextPreviewStyle(item, pageWidth)} />}
           {item.type === 'image' && (item.missing
             ? <div className="missing-scan" title={`Оборот ${item.scanCode || ''} в архиве не сохранился`} />
             : item.src
