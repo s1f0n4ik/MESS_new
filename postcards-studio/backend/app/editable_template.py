@@ -97,8 +97,8 @@ def blank_editable_layout(page_count: int = PAGE_COUNT) -> dict[str, list[dict]]
                     ),
                     _item(
                         f"scan-divider-{page}-{column}", "shape", x + 0.005, 0.382, inner_width, 0.006,
-                        shape="line", fill="transparent", stroke="#777777", strokeWidth=1,
-                        strokeStyle="dashed", locked=True, role="scan-divider", cardIndex=card_index,
+                        shape="line", fill="transparent", stroke="#777777", strokeWidth=0.5,
+                        strokeStyle="fine-dashed", locked=True, role="scan-divider", cardIndex=card_index,
                     ),
                     _item(
                         f"caption-{page}-{column}", "text", x + 0.005, 0.393, inner_width, 0.078,
@@ -109,8 +109,8 @@ def blank_editable_layout(page_count: int = PAGE_COUNT) -> dict[str, list[dict]]
                     ),
                     _item(
                         f"caption-divider-{page}-{column}", "shape", x + 0.005, 0.476, inner_width, 0.006,
-                        shape="line", fill="transparent", stroke="#777777", strokeWidth=1,
-                        strokeStyle="dashed", locked=True, role="caption-divider", cardIndex=card_index,
+                        shape="line", fill="transparent", stroke="#777777", strokeWidth=0.5,
+                        strokeStyle="fine-dashed", locked=True, role="caption-divider", cardIndex=card_index,
                     ),
                     _item(
                         f"body-{page}-{column}", "text", x + 0.005, 0.489, inner_width, 0.473,

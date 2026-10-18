@@ -98,17 +98,17 @@ class StudioApiTests(unittest.TestCase):
         self.assertEqual(self_delete.status_code, 409)
         service_headers = {"X-Collaboration-Secret": "development-collaboration-secret"}
         collab_auth = self.client.post("/api/internal/collaboration/auth", headers=service_headers,
-                                       json={"token": self.token, "documentName": "project-1-pdf1-layout-v5"})
+                                       json={"token": self.token, "documentName": "project-1-pdf1-layout-v6"})
         self.assertEqual(collab_auth.status_code, 200, collab_auth.text)
         self.assertEqual(collab_auth.json()["slot"], "pdf1")
         stale_collab_auth = self.client.post("/api/internal/collaboration/auth", headers=service_headers,
                                              json={"token": self.token, "documentName": "project-1-pdf1"})
         self.assertEqual(stale_collab_auth.status_code, 400)
-        collab_snapshot = self.client.post("/api/internal/collaboration/documents/project-1-pdf1-layout-v5",
+        collab_snapshot = self.client.post("/api/internal/collaboration/documents/project-1-pdf1-layout-v6",
                                            headers=service_headers,
                                            json={"pages": body["pages"], "updatedBy": "admin@test.local"})
         self.assertEqual(collab_snapshot.status_code, 200, collab_snapshot.text)
-        unauthorized = self.client.get("/api/internal/collaboration/documents/project-1-pdf1-layout-v5")
+        unauthorized = self.client.get("/api/internal/collaboration/documents/project-1-pdf1-layout-v6")
         self.assertEqual(unauthorized.status_code, 401)
         deleted = self.client.delete(f"/api/users/{created.json()['id']}", headers=self.headers)
         self.assertEqual(deleted.status_code, 200)
@@ -139,12 +139,12 @@ class StudioApiTests(unittest.TestCase):
              "bold": True, "color": "#223344", "background": "transparent", "align": "center"},
             {"id": "dashed-shape", "type": "shape", "x": .15, "y": .4, "w": .4, "h": .25,
              "shape": "ellipse", "fill": "transparent", "stroke": "#112233", "strokeWidth": 3,
-             "strokeStyle": "dashed"},
+             "strokeStyle": "dash-dot-dot"},
         ]})
         self.assertEqual(pages["1"][0]["type"], "page-background")
         self.assertEqual(pages["1"][1]["fontFamily"], "Georgia")
         self.assertTrue(pages["1"][1]["italic"])
-        self.assertEqual(pages["1"][2]["strokeStyle"], "dashed")
+        self.assertEqual(pages["1"][2]["strokeStyle"], "dash-dot-dot")
 
         root = Path(self.temp.name)
         output = root / "extended.pdf"

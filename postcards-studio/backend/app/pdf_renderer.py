@@ -131,8 +131,17 @@ def render_document(template: Path, content: dict, assets_root: Path, output: Pa
                 stroke = _color(item.get("stroke"))
                 fill_value = item.get("fill")
                 fill = None if not fill_value or fill_value == "transparent" else _color(fill_value, (1, 1, 1))
-                width = max(1, min(20, float(item.get("strokeWidth", 2))))
-                dashes = {"dashed": "[6 4] 0", "dotted": "[1 3] 0"}.get(item.get("strokeStyle"))
+                width = max(0.25, min(20, float(item.get("strokeWidth", 2))))
+                dashes = {
+                    "fine-dashed": "[3 3] 0",
+                    "dashed": "[6 4] 0",
+                    "long-dashed": "[10 5] 0",
+                    "extra-long-dashed": "[16 6] 0",
+                    "dotted": "[1 3] 0",
+                    "dense-dotted": "[1 2] 0",
+                    "dash-dot": "[8 3 1 3] 0",
+                    "dash-dot-dot": "[8 3 1 3 1 3] 0",
+                }.get(item.get("strokeStyle"))
                 shape = item.get("shape")
                 if shape == "ellipse":
                     page.draw_oval(rect, color=stroke, fill=fill, width=width, dashes=dashes, overlay=True)

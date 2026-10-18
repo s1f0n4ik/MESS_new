@@ -3,6 +3,7 @@ import { api, downloadFile, websocketUrl } from './api'
 import { useCollaboration } from './collaboration'
 import PdfPages from './PdfPages'
 import UserDialog from './UserDialog'
+import { STROKE_STYLE_OPTIONS } from './strokeStyles'
 
 const newId = () => `e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
 const FONT_OPTIONS = [['Times New Roman', 'Times New Roman'], ['Arial', 'Arial'], ['Georgia', 'Georgia'], ['Courier New', 'Courier New']]
@@ -36,12 +37,12 @@ function editableLayout(pageCount = 28) {
         { id: `scan-${page}-${column}`, type: 'image', x: x + .058, y: .034, w: .358, h: .337, src: '', fit: 'contain',
           locked: true, role: 'scan', sequence, scanCode, missing: sequence == null, cardIndex },
         { id: `scan-divider-${page}-${column}`, type: 'shape', shape: 'line', x: x + .005, y: .382, w: .462, h: .006,
-          fill: 'transparent', stroke: '#777777', strokeWidth: 1, strokeStyle: 'dashed', locked: true, role: 'scan-divider', cardIndex },
+          fill: 'transparent', stroke: '#777777', strokeWidth: .5, strokeStyle: 'fine-dashed', locked: true, role: 'scan-divider', cardIndex },
         { id: `caption-${page}-${column}`, type: 'text', x: x + .005, y: .393, w: .462, h: .078, text: '',
           placeholder: '', fontSize: 16, fontFamily: 'Times New Roman', color: '#111111',
           background: 'transparent', align: 'right', bold: false, italic: false, locked: true, role: 'caption', cardIndex },
         { id: `caption-divider-${page}-${column}`, type: 'shape', shape: 'line', x: x + .005, y: .476, w: .462, h: .006,
-          fill: 'transparent', stroke: '#777777', strokeWidth: 1, strokeStyle: 'dashed', locked: true, role: 'caption-divider', cardIndex },
+          fill: 'transparent', stroke: '#777777', strokeWidth: .5, strokeStyle: 'fine-dashed', locked: true, role: 'caption-divider', cardIndex },
         { id: `body-${page}-${column}`, type: 'text', x: x + .005, y: .489, w: .462, h: .473, text: '',
           placeholder: '', fontSize: 15, fontFamily: 'Times New Roman', color: '#111111',
           background: 'transparent', align: 'left', bold: false, italic: false, locked: true, role: 'body', cardIndex },
@@ -112,6 +113,7 @@ export default function Editor({ project, user, onLogout }) {
     collaboration.remove(selected.page, selected.id); setSelected(null)
   }
   const item = selected ? (collaboration.pages?.[selected.page] || []).find((value) => value.id === selected.id) : null
+  const adjustableDivider = item?.type === 'shape' && ['scan-divider', 'caption-divider'].includes(item.role)
   const pageBackground = (collaboration.pages?.[activePage] || []).find((value) => value.type === 'page-background')
 
   const duplicate = () => {
@@ -320,7 +322,7 @@ export default function Editor({ project, user, onLogout }) {
         {(user.role === 'publisher' || user.role === 'admin') && <button className="primary" onClick={publish} disabled={publishing || !collaboration.ready}>{publishing ? 'Собираем PDF…' : 'Опубликовать'}</button>}
         <span className="toolbar-spacer" /><span className={`status ${collaboration.status.includes('Офлайн') ? 'dirty' : ''}`}>{collaboration.status}</span>
       </div>
-      {item && <div className="properties"><b>{item.type === 'text' ? 'Текст' : item.type === 'image' ? 'Изображение' : item.type === 'shape' ? 'Фигура' : 'Маска'}</b>
+      {item && <div className="properties"><b>{item.type === 'text' ? 'Текст' : item.type === 'image' ? 'Изображение' : adjustableDivider ? 'Горизонтальная линия' : item.type === 'shape' ? 'Фигура' : 'Маска'}</b>
         {item.type === 'text' && <>
           <label>Единый шрифт<select value={item.fontFamily || 'Times New Roman'} onChange={(event) => collaboration.changeAllText({ fontFamily: event.target.value })}>{FONT_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label>Размер<input type="number" min="6" max="240" value={item.fontSize} onChange={(event) => change(selected.page, item.id, { fontSize: Number(event.target.value) })} /></label>
@@ -337,15 +339,16 @@ export default function Editor({ project, user, onLogout }) {
           <button onClick={() => { replaceImageRef.current = selected; fileRef.current?.click() }}>Заменить файл</button>
         </>}
         {item.type === 'shape' && <>
-          <label>Фигура<select value={item.shape || 'rectangle'} onChange={(event) => change(selected.page, item.id, { shape: event.target.value })}><option value="rectangle">Прямоугольник</option><option value="ellipse">Эллипс</option><option value="line">Линия</option></select></label>
-          {item.shape !== 'line' && <label>Заливка<input type="color" value={item.fill === 'transparent' ? '#ffffff' : item.fill} onChange={(event) => change(selected.page, item.id, { fill: event.target.value })} /></label>}
-          {item.shape !== 'line' && <button onClick={() => change(selected.page, item.id, { fill: 'transparent' })}>Без заливки</button>}
+          {!adjustableDivider && <label>Фигура<select value={item.shape || 'rectangle'} onChange={(event) => change(selected.page, item.id, { shape: event.target.value })}><option value="rectangle">Прямоугольник</option><option value="ellipse">Эллипс</option><option value="line">Линия</option></select></label>}
+          {!['line', 'vertical-line'].includes(item.shape) && <label>Заливка<input type="color" value={item.fill === 'transparent' ? '#ffffff' : item.fill} onChange={(event) => change(selected.page, item.id, { fill: event.target.value })} /></label>}
+          {!['line', 'vertical-line'].includes(item.shape) && <button onClick={() => change(selected.page, item.id, { fill: 'transparent' })}>Без заливки</button>}
           <label>Контур<input type="color" value={item.stroke || '#111111'} onChange={(event) => change(selected.page, item.id, { stroke: event.target.value })} /></label>
-          <label>Толщина<input type="number" min="1" max="20" value={item.strokeWidth || 2} onChange={(event) => change(selected.page, item.id, { strokeWidth: Number(event.target.value) })} /></label>
-          <label>Линия<select value={item.strokeStyle || 'solid'} onChange={(event) => change(selected.page, item.id, { strokeStyle: event.target.value })}><option value="solid">Сплошная</option><option value="dashed">Пунктир</option><option value="dotted">Точки</option></select></label>
+          <label>Толщина<input type="number" min="0.25" max="20" step="0.25" value={item.strokeWidth ?? 1} onChange={(event) => change(selected.page, item.id, { strokeWidth: Number(event.target.value) })} /></label>
+          <label>Вид штриха<select value={item.strokeStyle || 'solid'} onChange={(event) => change(selected.page, item.id, { strokeStyle: event.target.value })}>{STROKE_STYLE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          {adjustableDivider && <span className="property-hint">После разблокировки перетаскивается только вверх и вниз</span>}
         </>}
         {item.type === 'cover' && <label>Цвет маски<input type="color" value={item.color} onChange={(event) => change(selected.page, item.id, { color: event.target.value })} /></label>}
-        {item.type !== 'page-background' && <button onClick={() => change(selected.page, item.id, { locked: !item.locked })}>{item.locked ? 'Разблокировать положение' : 'Закрепить положение'}</button>}
+        {item.type !== 'page-background' && <button onClick={() => change(selected.page, item.id, { locked: !item.locked })}>{adjustableDivider ? (item.locked ? 'Разблокировать и перемещать' : 'Зафиксировать линию') : (item.locked ? 'Разблокировать положение' : 'Закрепить положение')}</button>}
       </div>}
       {(error || collaboration.error) && <div className="error-banner">{error || collaboration.error}</div>}
       {notice && !error && !collaboration.error && <div className="notice-banner">{notice}</div>}

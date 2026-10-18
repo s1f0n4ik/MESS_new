@@ -62,7 +62,9 @@ class EditableTemplateTests(unittest.TestCase):
         self.assertAlmostEqual(0.5 - (outlines[0]["x"] + outlines[0]["w"]), outlines[1]["x"] - 0.5)
         self.assertTrue(all(item["strokeStyle"] == "dashed" for item in outlines))
         dividers = [item for item in pages["1"] if item.get("role") in {"scan-divider", "caption-divider"}]
-        self.assertTrue(all(item["strokeStyle"] == "dashed" for item in dividers))
+        self.assertTrue(all(item["strokeStyle"] == "fine-dashed" for item in dividers))
+        self.assertTrue(all(item["strokeWidth"] == 0.5 for item in dividers))
+        self.assertTrue(all(item["locked"] for item in dividers))
         self.assertTrue(all(item.get("placeholder", "") == "" for values in pages.values()
                             for item in values if item.get("type") == "text"))
 

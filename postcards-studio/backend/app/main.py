@@ -148,8 +148,11 @@ def clean_pages(raw_pages: dict) -> dict:
                     shape=raw.get("shape") if raw.get("shape") in {"rectangle", "ellipse", "line", "vertical-line"} else "rectangle",
                     fill=str(raw.get("fill") or "transparent")[:32],
                     stroke=str(raw.get("stroke") or "#111111")[:32],
-                    strokeWidth=max(1, min(20, float(raw.get("strokeWidth") or 2))),
-                    strokeStyle=raw.get("strokeStyle") if raw.get("strokeStyle") in {"solid", "dashed", "dotted"} else "solid",
+                    strokeWidth=max(0.25, min(20, float(raw.get("strokeWidth") or 2))),
+                    strokeStyle=raw.get("strokeStyle") if raw.get("strokeStyle") in {
+                        "solid", "fine-dashed", "dashed", "long-dashed", "extra-long-dashed",
+                        "dotted", "dense-dotted", "dash-dot", "dash-dot-dot",
+                    } else "solid",
                 )
             item["locked"] = bool(raw.get("locked"))
             if raw.get("role") in {"scan", "caption", "body", "outline", "divider",
@@ -287,7 +290,7 @@ def find_document(db: Session, project_id: int, slot: str) -> Document:
 
 
 def parse_collaboration_name(value: str) -> tuple[int, str]:
-    match = re.fullmatch(r"project-(\d+)-(pdf[1-4])-layout-v5", value)
+    match = re.fullmatch(r"project-(\d+)-(pdf[1-4])-layout-v6", value)
     if not match:
         raise HTTPException(400, "Некорректное имя совместного документа")
     return int(match.group(1)), match.group(2)
