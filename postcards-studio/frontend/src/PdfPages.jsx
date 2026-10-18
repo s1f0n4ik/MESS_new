@@ -6,6 +6,9 @@ import { STROKE_DASHARRAYS } from './strokeStyles'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
 
+const TEMPLATE_WIDTH_PT = 1190.55
+const TEMPLATE_HEIGHT_PT = 841.89
+
 function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
   const canvasRef = useRef(null)
   const pageRef = useRef(null)
@@ -103,6 +106,8 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
         const adjustableVertical = item.type === 'shape' && item.shape === 'vertical-line' && ['divider', 'outline-vertical'].includes(item.role)
         const adjustableLine = adjustableHorizontal || adjustableVertical
         const style = { left: `${item.x * 100}%`, top: `${item.y * 100}%`, width: `${item.w * 100}%`, height: `${item.h * 100}%` }
+        const shapeWidth = Math.max(.001, Number(item.w || 0) * TEMPLATE_WIDTH_PT)
+        const shapeHeight = Math.max(.001, Number(item.h || 0) * TEMPLATE_HEIGHT_PT)
         if (item.type === 'page-background' || (item.type === 'shape' && item.locked && !adjustableLine)) style.pointerEvents = 'none'
         return <div key={item.id} className={`editor-item ${active ? 'selected' : ''} ${item.locked ? 'locked' : ''} ${adjustableHorizontal ? 'adjustable-horizontal' : ''} ${adjustableVertical ? 'adjustable-vertical' : ''} item-${item.type}`} style={style}
           onPointerDown={(event) => { if (item.locked) { event.stopPropagation(); onSelect(number, item.id) } }}>
@@ -124,14 +129,14 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
           {item.type === 'cover' && <div className="cover" style={{ background: item.color || '#fff' }} />}
           {item.type === 'page-background' && <div className="page-background" style={{ background: item.color || '#fff' }} />}
           {item.type === 'shape' && ['line', 'vertical-line', 'horizontal-frame'].includes(item.shape)
-            ? <svg className="shape shape-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+            ? <svg className="shape shape-svg" viewBox={`0 0 ${shapeWidth} ${shapeHeight}`} preserveAspectRatio="none" aria-hidden="true">
               {item.shape === 'horizontal-frame' ? <>
-                <line x1="0" y1="0" x2="100" y2="0" stroke={item.stroke || '#111111'} strokeWidth={item.strokeWidth ?? 1} strokeDasharray={STROKE_DASHARRAYS[item.strokeStyle || 'solid']} vectorEffect="non-scaling-stroke" />
-                <line x1="0" y1="100" x2="100" y2="100" stroke={item.stroke || '#111111'} strokeWidth={item.strokeWidth ?? 1} strokeDasharray={STROKE_DASHARRAYS[item.strokeStyle || 'solid']} vectorEffect="non-scaling-stroke" />
-              </> : <line x1={item.shape === 'vertical-line' ? 50 : 0} y1={item.shape === 'vertical-line' ? 0 : 50}
-                  x2={item.shape === 'vertical-line' ? 50 : 100} y2={item.shape === 'vertical-line' ? 100 : 50}
+                <line x1="0" y1="0" x2={shapeWidth} y2="0" stroke={item.stroke || '#111111'} strokeWidth={item.strokeWidth ?? 1} strokeDasharray={STROKE_DASHARRAYS[item.strokeStyle || 'solid']} />
+                <line x1="0" y1={shapeHeight} x2={shapeWidth} y2={shapeHeight} stroke={item.stroke || '#111111'} strokeWidth={item.strokeWidth ?? 1} strokeDasharray={STROKE_DASHARRAYS[item.strokeStyle || 'solid']} />
+              </> : <line x1={item.shape === 'vertical-line' ? shapeWidth / 2 : 0} y1={item.shape === 'vertical-line' ? 0 : shapeHeight / 2}
+                  x2={item.shape === 'vertical-line' ? shapeWidth / 2 : shapeWidth} y2={item.shape === 'vertical-line' ? shapeHeight : shapeHeight / 2}
                   stroke={item.stroke || '#111111'} strokeWidth={item.strokeWidth ?? 1}
-                  strokeDasharray={STROKE_DASHARRAYS[item.strokeStyle || 'solid']} vectorEffect="non-scaling-stroke" />}
+                  strokeDasharray={STROKE_DASHARRAYS[item.strokeStyle || 'solid']} />}
             </svg>
             : item.type === 'shape' && <div className={`shape shape-${item.shape || 'rectangle'}`} style={{
               '--shape-fill': item.fill || 'transparent', '--shape-stroke': item.stroke || '#111111',

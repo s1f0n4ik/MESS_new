@@ -375,7 +375,10 @@ export default function Editor({ project, user, onLogout }) {
           {!['line', 'vertical-line'].includes(item.shape) && <button onClick={() => change(selected.page, item.id, { fill: 'transparent' })}>Без заливки</button>}
           <label>Контур<input type="color" value={item.stroke || '#111111'} onChange={(event) => change(selected.page, item.id, { stroke: event.target.value })} /></label>
           <label>Толщина<input type="number" min="0.25" max="20" step="0.25" value={item.strokeWidth ?? 1} onChange={(event) => change(selected.page, item.id, { strokeWidth: Number(event.target.value) })} /></label>
-          <label>Вид штриха<select value={item.strokeStyle || 'solid'} onChange={(event) => change(selected.page, item.id, { strokeStyle: event.target.value })}>{STROKE_STYLE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <label>Вид штриха<select value={item.strokeStyle || 'solid'} onChange={(event) => change(selected.page, item.id,
+            event.target.value === 'illustrator-dashed'
+              ? { strokeStyle: event.target.value, strokeWidth: .5, stroke: '#231f20' }
+              : { strokeStyle: event.target.value })}>{STROKE_STYLE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           {adjustableHorizontal && <span className="property-hint">Перетаскивание двигает линию вверх/вниз; круглые маркеры меняют её длину. Изменение повторяется на всех разворотах.</span>}
           {adjustableVertical && <span className="property-hint">Перетаскивание двигает линию влево/вправо; круглые маркеры меняют её длину. Изменение повторяется на всех разворотах.</span>}
         </>}
