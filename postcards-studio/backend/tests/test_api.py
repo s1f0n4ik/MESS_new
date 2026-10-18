@@ -98,17 +98,17 @@ class StudioApiTests(unittest.TestCase):
         self.assertEqual(self_delete.status_code, 409)
         service_headers = {"X-Collaboration-Secret": "development-collaboration-secret"}
         collab_auth = self.client.post("/api/internal/collaboration/auth", headers=service_headers,
-                                       json={"token": self.token, "documentName": "project-1-pdf1-layout-v7"})
+                                       json={"token": self.token, "documentName": "project-1-pdf1-layout-v8-template-0"})
         self.assertEqual(collab_auth.status_code, 200, collab_auth.text)
         self.assertEqual(collab_auth.json()["slot"], "pdf1")
         stale_collab_auth = self.client.post("/api/internal/collaboration/auth", headers=service_headers,
                                              json={"token": self.token, "documentName": "project-1-pdf1"})
         self.assertEqual(stale_collab_auth.status_code, 400)
-        collab_snapshot = self.client.post("/api/internal/collaboration/documents/project-1-pdf1-layout-v7",
+        collab_snapshot = self.client.post("/api/internal/collaboration/documents/project-1-pdf1-layout-v8-template-0",
                                            headers=service_headers,
                                            json={"pages": body["pages"], "updatedBy": "admin@test.local"})
         self.assertEqual(collab_snapshot.status_code, 200, collab_snapshot.text)
-        unauthorized = self.client.get("/api/internal/collaboration/documents/project-1-pdf1-layout-v7")
+        unauthorized = self.client.get("/api/internal/collaboration/documents/project-1-pdf1-layout-v8-template-0")
         self.assertEqual(unauthorized.status_code, 401)
         deleted = self.client.delete(f"/api/users/{created.json()['id']}", headers=self.headers)
         self.assertEqual(deleted.status_code, 200)
@@ -198,14 +198,25 @@ class StudioApiTests(unittest.TestCase):
              "color": "#111111", "background": "transparent", "align": "left",
              "locked": True, "role": "body", "cardIndex": 1},
         ]}
+        other_pages = {"1": [{**template_pages["1"][0]},
+                              {**template_pages["1"][1]},
+                              {**template_pages["1"][2], "text": "Текст второго документа"}]}
+        other_saved = self.client.post("/api/projects/1/documents/pdf2/collaboration-snapshot",
+                                       headers=self.headers, json={"pages": other_pages})
+        self.assertEqual(other_saved.status_code, 200, other_saved.text)
         saved = self.client.put("/api/projects/1/documents/pdf1/template", headers=self.headers,
                                 json={"pages": template_pages})
         self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json()["templateRevision"], 1)
         loaded = self.client.get("/api/projects/1/documents/pdf1/template", headers=self.headers)
         self.assertEqual(loaded.status_code, 200, loaded.text)
         self.assertEqual(loaded.json()["pages"]["1"][1]["role"], "scan")
         self.assertEqual(loaded.json()["pages"]["1"][1]["src"], "")
         self.assertEqual(loaded.json()["pages"]["1"][2]["fontFamily"], "Times New Roman")
+        loaded_other = self.client.get("/api/projects/1/documents/pdf2/template", headers=self.headers)
+        self.assertEqual(loaded_other.status_code, 200, loaded_other.text)
+        self.assertEqual(loaded_other.json()["pages"]["1"][2]["text"], "Текст второго документа")
+        self.assertEqual(self.client.get("/api/projects/1", headers=self.headers).json()["templateRevision"], 1)
 
         root = Path(self.temp.name)
         red = root / "red.png"

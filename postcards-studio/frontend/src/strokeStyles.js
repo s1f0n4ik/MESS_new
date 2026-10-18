@@ -1,5 +1,6 @@
 export const STROKE_STYLE_OPTIONS = [
   ['solid', 'Сплошная'],
+  ['illustrator-dashed', 'Как в Illustrator (6/6)'],
   ['fine-dashed', 'Мелкий штрих'],
   ['dashed', 'Обычный штрих'],
   ['long-dashed', 'Длинный штрих'],
@@ -12,6 +13,7 @@ export const STROKE_STYLE_OPTIONS = [
 
 export const STROKE_DASHARRAYS = {
   solid: undefined,
+  'illustrator-dashed': '6 6',
   'fine-dashed': '3 3',
   dashed: '6 4',
   'long-dashed': '10 5',

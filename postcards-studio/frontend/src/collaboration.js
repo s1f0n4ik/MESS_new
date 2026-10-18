@@ -14,7 +14,7 @@ const EDITOR_ORIGIN = Symbol('postcards-editor')
 // Bump this value whenever the persisted Yjs document schema/bootstrap changes.
 // A new room also creates a new IndexedDB namespace, so an old browser tab cannot
 // merge a stale local copy back into the freshly migrated server document.
-const COLLABORATION_LAYOUT_VERSION = 'layout-v7'
+const COLLABORATION_LAYOUT_VERSION = 'layout-v8'
 
 function toElement(value) {
   const element = new Y.Map()
@@ -70,8 +70,8 @@ function colorFor(value) {
   return colors[Math.abs(hash) % colors.length]
 }
 
-export function useCollaboration(projectId, slot, user) {
-  const roomName = `project-${projectId}-${slot}-${COLLABORATION_LAYOUT_VERSION}`
+export function useCollaboration(projectId, slot, user, templateRevision = 0) {
+  const roomName = `project-${projectId}-${slot}-${COLLABORATION_LAYOUT_VERSION}-template-${templateRevision}`
   const documentRef = useRef(null)
   const [pages, setPages] = useState({})
   const [ready, setReady] = useState(false)
@@ -134,6 +134,43 @@ export function useCollaboration(projectId, slot, user) {
     }
   }), [transact])
 
+  const changeLayout = useCallback((page, id, patch) => transact((pagesMap) => {
+    const sourceList = pagesMap.get(String(page))
+    if (!(sourceList instanceof Y.Array)) return
+    const source = sourceList.toArray().find((entry) => entry.get('id') === id)
+    if (!source) return
+    const role = source.get('role')
+    const templateRoles = ['scan', 'caption', 'body', 'outline', 'scan-divider', 'caption-divider', 'divider', 'outline-vertical']
+    const contentPatch = Object.keys(patch).some((key) => ['text', 'src', 'sourceLabel', 'sequence', 'scanCode', 'missing', 'cardIndex'].includes(key))
+    if (!templateRoles.includes(role) || contentPatch) {
+      for (const [key, value] of Object.entries(patch)) {
+        const current = source.get(key)
+        if (key === 'text' && current instanceof Y.Text) setText(current, String(value))
+        else source.set(key, value)
+      }
+      return
+    }
+    const side = source.get('side')
+    const deltas = {}
+    for (const key of ['x', 'y', 'w', 'h']) if (patch[key] !== undefined) {
+      deltas[key] = Number(patch[key]) - Number(source.get(key) || 0)
+    }
+    const hasGeometry = Object.keys(deltas).length > 0
+    for (const [targetPage, list] of pagesMap.entries()) {
+      if (!(list instanceof Y.Array)) continue
+      for (const element of list.toArray()) {
+        if (!(element instanceof Y.Map) || element.get('role') !== role) continue
+        if (role === 'outline-vertical' && element.get('side') !== side) continue
+        if (role === 'body' && hasGeometry && Number(targetPage) % 2 !== Number(page) % 2) continue
+        for (const [key, value] of Object.entries(patch)) {
+          // Unlocking is local to the selected line; geometry and styling are global.
+          if (key === 'locked' && element !== source) continue
+          element.set(key, deltas[key] === undefined ? value : Number(element.get(key) || 0) + deltas[key])
+        }
+      }
+    }
+  }), [transact])
+
   const add = useCallback((page, value) => transact((pagesMap) => {
     let list = pagesMap.get(String(page))
     if (!(list instanceof Y.Array)) { list = new Y.Array(); pagesMap.set(String(page), list) }
@@ -182,7 +219,7 @@ export function useCollaboration(projectId, slot, user) {
   const replace = useCallback((value) => { if (documentRef.current) replacePages(documentRef.current, value, EDITOR_ORIGIN) }, [])
   const snapshot = useCallback(() => documentRef.current ? pagesToJson(documentRef.current) : {}, [])
   return {
-    pages, ready, status, people, error, change, add, remove, resetPage, blankPage,
+    pages, ready, status, people, error, change, changeLayout, add, remove, resetPage, blankPage,
     blankDocument, changeAllText, undo, redo, canUndo, canRedo, replace, snapshot,
   }
 }

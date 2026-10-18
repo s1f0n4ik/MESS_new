@@ -74,25 +74,27 @@ def blank_editable_layout(page_count: int = PAGE_COUNT) -> dict[str, list[dict]]
         # 2x2 Illustrator/PDF sample.
         items.append(_item(
             f"divider-{page}", "shape", 0.498, 0, 0.004, 1,
-            shape="vertical-line", fill="transparent", stroke="#555555", strokeWidth=1,
+            shape="vertical-line", fill="transparent", stroke="#231f20", strokeWidth=1,
             strokeStyle="solid", locked=True, role="divider",
         ))
         for column in range(2):
             card_index = ((page - 1) // 2) * 2 + column + 1
             scan_number, scan_code = SPREAD_SCANS[(page - 1) // 2][column]
-            x = 0.018 if column == 0 else 0.510
-            column_width = 0.472
+            # Exact geometry measured from the supplied Illustrator source:
+            # 1190.55 x 841.89 pt, 28.346 pt outer inset and a 28.347 pt gutter.
+            x = 0.023809 if column == 0 else 0.511904
+            column_width = 0.464287
             inner_width = column_width - 0.010
             items.append(_item(
-                f"outline-{page}-{column}", "shape", x, 0.032, column_width, 0.936,
-                shape="horizontal-frame", fill="transparent", stroke="#777777", strokeWidth=1,
-                strokeStyle="dashed", locked=True, role="outline", cardIndex=card_index,
+                f"outline-{page}-{column}", "shape", x, 0.03367, column_width, 0.93266,
+                shape="horizontal-frame", fill="transparent", stroke="#231f20", strokeWidth=0.5,
+                strokeStyle="illustrator-dashed", locked=True, role="outline", cardIndex=card_index,
             ))
             for side, line_x in (("left", x), ("right", x + column_width)):
                 items.append(_item(
-                    f"outline-{side}-{page}-{column}", "shape", line_x - 0.002, 0.032, 0.004, 0.936,
-                    shape="vertical-line", fill="transparent", stroke="#777777", strokeWidth=1,
-                    strokeStyle="dashed", locked=True, role="outline-vertical", side=side,
+                    f"outline-{side}-{page}-{column}", "shape", line_x - 0.002, 0.03367, 0.004, 0.93266,
+                    shape="vertical-line", fill="transparent", stroke="#231f20", strokeWidth=0.5,
+                    strokeStyle="illustrator-dashed", locked=True, role="outline-vertical", side=side,
                     cardIndex=card_index,
                 ))
             if page % 2:
@@ -103,9 +105,9 @@ def blank_editable_layout(page_count: int = PAGE_COUNT) -> dict[str, list[dict]]
                         scanCode=scan_code, missing=scan_number is None, cardIndex=card_index,
                     ),
                     _item(
-                        f"scan-divider-{page}-{column}", "shape", x + 0.005, 0.382, inner_width, 0.006,
-                        shape="line", fill="transparent", stroke="#777777", strokeWidth=0.5,
-                        strokeStyle="fine-dashed", locked=True, role="scan-divider", cardIndex=card_index,
+                        f"scan-divider-{page}-{column}", "shape", x, 0.40104, column_width, 0.006,
+                        shape="line", fill="transparent", stroke="#231f20", strokeWidth=0.5,
+                        strokeStyle="illustrator-dashed", locked=True, role="scan-divider", cardIndex=card_index,
                     ),
                     _item(
                         f"caption-{page}-{column}", "text", x + 0.005, 0.393, inner_width, 0.078,
@@ -115,9 +117,9 @@ def blank_editable_layout(page_count: int = PAGE_COUNT) -> dict[str, list[dict]]
                         cardIndex=card_index,
                     ),
                     _item(
-                        f"caption-divider-{page}-{column}", "shape", x + 0.005, 0.476, inner_width, 0.006,
-                        shape="line", fill="transparent", stroke="#777777", strokeWidth=0.5,
-                        strokeStyle="fine-dashed", locked=True, role="caption-divider", cardIndex=card_index,
+                        f"caption-divider-{page}-{column}", "shape", x, 0.473, column_width, 0.006,
+                        shape="line", fill="transparent", stroke="#231f20", strokeWidth=0.5,
+                        strokeStyle="illustrator-dashed", locked=True, role="caption-divider", cardIndex=card_index,
                     ),
                     _item(
                         f"body-{page}-{column}", "text", x + 0.005, 0.489, inner_width, 0.473,

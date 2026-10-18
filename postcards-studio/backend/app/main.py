@@ -22,7 +22,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .db import (Document, DocumentRevision, DocumentTemplate, Project, Release,
+from .db import (Document, DocumentRevision, DocumentTemplate, Project, ProjectTemplate, Release,
                  SessionLocal, User, init_db, session_scope)
 from .pdf_renderer import publish_release, render_document
 from .editable_template import CUSTOMER_SCAN_CELLS
@@ -150,7 +150,7 @@ def clean_pages(raw_pages: dict) -> dict:
                     stroke=str(raw.get("stroke") or "#111111")[:32],
                     strokeWidth=max(0.25, min(20, float(raw.get("strokeWidth") or 2))),
                     strokeStyle=raw.get("strokeStyle") if raw.get("strokeStyle") in {
-                        "solid", "fine-dashed", "dashed", "long-dashed", "extra-long-dashed",
+                        "solid", "illustrator-dashed", "fine-dashed", "dashed", "long-dashed", "extra-long-dashed",
                         "dotted", "dense-dotted", "dash-dot", "dash-dot-dot",
                     } else "solid",
                 )
@@ -279,7 +279,8 @@ def project(project_id: int, user: User = Depends(current_user), db: Session = D
     if not value:
         raise HTTPException(404, "Проект не найден")
     documents = db.scalars(select(Document).where(Document.project_id == project_id).order_by(Document.slot)).all()
-    return {"id": value.id, "name": value.name,
+    template_value = db.scalar(select(ProjectTemplate).where(ProjectTemplate.project_id == project_id))
+    return {"id": value.id, "name": value.name, "templateRevision": template_value.revision if template_value else 0,
             "documents": [{key: doc_value[key] for key in ("id", "slot", "title", "revision", "updatedAt", "updatedBy")}
                           for item in documents for doc_value in [document_view(item)]]}
 
@@ -292,7 +293,7 @@ def find_document(db: Session, project_id: int, slot: str) -> Document:
 
 
 def parse_collaboration_name(value: str) -> tuple[int, str]:
-    match = re.fullmatch(r"project-(\d+)-(pdf[1-4])-layout-v7", value)
+    match = re.fullmatch(r"project-(\d+)-(pdf[1-4])-layout-v8-template-\d+", value)
     if not match:
         raise HTTPException(400, "Некорректное имя совместного документа")
     return int(match.group(1)), match.group(2)
@@ -572,38 +573,110 @@ async def import_docx_assets(project_id: int, file: UploadFile = File(...),
     return {"tableIndex": len(source.tables), "count": len(result), "assets": result}
 
 
+TEMPLATE_CONTENT_KEYS = {"text", "src", "sourceLabel"}
+TEMPLATE_LINE_ROLES = {"scan-divider", "caption-divider", "divider", "outline-vertical"}
+TEMPLATE_LAYOUT_ROLES = {"scan", "caption", "body", "outline", *TEMPLATE_LINE_ROLES}
+
+
+def normalize_global_template(pages: dict) -> dict:
+    """Keep reusable layout and styles without copying document prose."""
+    result = json.loads(json.dumps(pages))
+    for items in result.values():
+        for item in items:
+            if item.get("type") == "text":
+                item["text"] = ""
+            if item.get("role") in TEMPLATE_LAYOUT_ROLES or item.get("type") == "page-background":
+                item["locked"] = True
+    return result
+
+
+def merge_global_template(current_pages: dict, template_pages: dict) -> dict:
+    """Apply one shared layout while retaining each document's text and scans."""
+    merged_pages = {}
+    for page_number, template_items in template_pages.items():
+        current_items = current_pages.get(str(page_number), [])
+        by_id = {item.get("id"): item for item in current_items}
+        template_ids = {item.get("id") for item in template_items}
+        merged = []
+        for template_item in template_items:
+            value = dict(template_item)
+            existing = by_id.get(template_item.get("id"))
+            if existing:
+                for key in TEMPLATE_CONTENT_KEYS:
+                    if key in existing:
+                        value[key] = existing[key]
+            merged.append(value)
+        merged.extend(item for item in current_items if item.get("id") not in template_ids)
+        merged_pages[str(page_number)] = merged
+    for page_number, items in current_pages.items():
+        if str(page_number) not in merged_pages:
+            merged_pages[str(page_number)] = items
+    return merged_pages
+
+
 @app.get("/api/projects/{project_id}/documents/{slot}/template")
 def get_document_template(project_id: int, slot: str, user: User = Depends(current_user),
                           db: Session = Depends(session_scope)):
     del user
     document = find_document(db, project_id, slot)
-    value = db.scalar(select(DocumentTemplate).where(DocumentTemplate.document_id == document.id))
+    value = db.scalar(select(ProjectTemplate).where(ProjectTemplate.project_id == project_id))
     if not value:
-        raise HTTPException(404, "Сохранённый шаблон ещё не создан")
-    content = json.loads(value.content_json)
-    return {"pages": content.get("pages") or {}, "updatedAt": iso(value.updated_at),
-            "updatedBy": value.updated_by}
+        legacy = db.scalar(select(DocumentTemplate).where(DocumentTemplate.document_id == document.id))
+        if not legacy:
+            raise HTTPException(404, "Общий шаблон ещё не создан")
+        value = legacy
+    template_pages = (json.loads(value.content_json).get("pages") or {})
+    current_pages = (json.loads(document.content_json).get("pages") or {})
+    return {"pages": merge_global_template(current_pages, template_pages),
+            "templateRevision": getattr(value, "revision", 0),
+            "updatedAt": iso(value.updated_at), "updatedBy": value.updated_by}
 
 
 @app.put("/api/projects/{project_id}/documents/{slot}/template")
-def save_document_template(project_id: int, slot: str, body: SaveTemplateBody,
-                           user: User = Depends(publisher), db: Session = Depends(session_scope)):
+async def save_document_template(project_id: int, slot: str, body: SaveTemplateBody,
+                                 user: User = Depends(publisher), db: Session = Depends(session_scope)):
     document = find_document(db, project_id, slot)
     pages = clean_pages(body.pages)
-    payload = json.dumps({"pages": pages}, ensure_ascii=False, separators=(",", ":"))
+    template_pages = normalize_global_template(pages)
+    payload = json.dumps({"pages": template_pages}, ensure_ascii=False, separators=(",", ":"))
     if len(payload.encode("utf-8")) > 4 * 1024 * 1024:
         raise HTTPException(413, "Шаблон слишком большой")
-    value = db.scalar(select(DocumentTemplate).where(DocumentTemplate.document_id == document.id))
+    value = db.scalar(select(ProjectTemplate).where(ProjectTemplate.project_id == project_id))
     if value:
         value.content_json = payload
+        value.revision += 1
         value.updated_at = now()
         value.updated_by = user.email
     else:
-        value = DocumentTemplate(document_id=document.id, content_json=payload,
-                                 updated_at=now(), updated_by=user.email)
+        value = ProjectTemplate(project_id=project_id, revision=1, content_json=payload,
+                                updated_at=now(), updated_by=user.email)
         db.add(value)
+        db.flush()
+    documents = db.scalars(select(Document).where(Document.project_id == project_id).order_by(Document.slot)).all()
+    current_result = None
+    changed_documents = []
+    for target in documents:
+        source_pages = pages if target.id == document.id else (json.loads(target.content_json).get("pages") or {})
+        merged_pages = merge_global_template(source_pages, template_pages)
+        merged_payload = json.dumps({"pages": merged_pages}, ensure_ascii=False, separators=(",", ":"))
+        if merged_payload != target.content_json:
+            target.revision += 1
+            target.content_json = merged_payload
+            target.updated_at = now()
+            target.updated_by = user.email
+            db.add(DocumentRevision(document_id=target.id, revision=target.revision,
+                                    content_json=merged_payload, created_by=f"{user.email} (общий шаблон)"))
+            changed_documents.append((target.slot, target.revision))
+        if target.id == document.id:
+            current_result = merged_pages
     db.commit()
-    return {"saved": True, "updatedAt": iso(value.updated_at), "updatedBy": value.updated_by}
+    for changed_slot, changed_revision in changed_documents:
+        await hub.publish(project_id, {"type": "document.saved", "slot": changed_slot,
+                                       "revision": changed_revision, "updatedBy": user.email})
+    await hub.publish(project_id, {"type": "template.updated", "templateRevision": value.revision,
+                                   "updatedBy": user.email})
+    return {"saved": True, "pages": current_result or {}, "templateRevision": value.revision,
+            "updatedAt": iso(value.updated_at), "updatedBy": value.updated_by}
 
 
 @app.get("/api/template")

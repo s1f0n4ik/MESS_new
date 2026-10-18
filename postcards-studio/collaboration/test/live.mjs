@@ -16,7 +16,7 @@ function connect() {
   const document = new Y.Doc()
   return new Promise((resolve, reject) => {
     const provider = new HocuspocusProvider({
-      url: socketUrl, name: 'project-1-pdf1-layout-v7', token, document,
+      url: socketUrl, name: 'project-1-pdf1-layout-v8-template-0', token, document,
       onSynced: () => resolve({ provider, document }),
       onAuthenticationFailed: ({ reason }) => reject(new Error(reason)),
     })

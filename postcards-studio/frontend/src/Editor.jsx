@@ -23,30 +23,30 @@ function editableLayout(pageCount = 28) {
     const items = [
       { id: `background-${page}`, type: 'page-background', x: 0, y: 0, w: 1, h: 1, color: '#ffffff', locked: true },
       { id: `divider-${page}`, type: 'shape', shape: 'vertical-line', x: .498, y: 0, w: .004, h: 1,
-        fill: 'transparent', stroke: '#555555', strokeWidth: 1, strokeStyle: 'solid', locked: true, role: 'divider' },
+        fill: 'transparent', stroke: '#231f20', strokeWidth: 1, strokeStyle: 'solid', locked: true, role: 'divider' },
     ]
     for (let column = 0; column < 2; column += 1) {
       const cardIndex = Math.floor((page - 1) / 2) * 2 + column + 1
       const [sequence, scanCode] = SPREAD_SCANS[Math.floor((page - 1) / 2)][column]
-      const x = column ? .510 : .018
+      const x = column ? .511904 : .023809
       items.push(
-        { id: `outline-${page}-${column}`, type: 'shape', shape: 'horizontal-frame', x, y: .032, w: .472, h: .936,
-          fill: 'transparent', stroke: '#777777', strokeWidth: 1, strokeStyle: 'dashed', locked: true, role: 'outline', cardIndex },
-        { id: `outline-left-${page}-${column}`, type: 'shape', shape: 'vertical-line', x: x - .002, y: .032, w: .004, h: .936,
-          fill: 'transparent', stroke: '#777777', strokeWidth: 1, strokeStyle: 'dashed', locked: true, role: 'outline-vertical', side: 'left', cardIndex },
-        { id: `outline-right-${page}-${column}`, type: 'shape', shape: 'vertical-line', x: x + .470, y: .032, w: .004, h: .936,
-          fill: 'transparent', stroke: '#777777', strokeWidth: 1, strokeStyle: 'dashed', locked: true, role: 'outline-vertical', side: 'right', cardIndex },
+        { id: `outline-${page}-${column}`, type: 'shape', shape: 'horizontal-frame', x, y: .03367, w: .464287, h: .93266,
+          fill: 'transparent', stroke: '#231f20', strokeWidth: .5, strokeStyle: 'illustrator-dashed', locked: true, role: 'outline', cardIndex },
+        { id: `outline-left-${page}-${column}`, type: 'shape', shape: 'vertical-line', x: x - .002, y: .03367, w: .004, h: .93266,
+          fill: 'transparent', stroke: '#231f20', strokeWidth: .5, strokeStyle: 'illustrator-dashed', locked: true, role: 'outline-vertical', side: 'left', cardIndex },
+        { id: `outline-right-${page}-${column}`, type: 'shape', shape: 'vertical-line', x: x + .462287, y: .03367, w: .004, h: .93266,
+          fill: 'transparent', stroke: '#231f20', strokeWidth: .5, strokeStyle: 'illustrator-dashed', locked: true, role: 'outline-vertical', side: 'right', cardIndex },
       )
       if (page % 2) items.push(
         { id: `scan-${page}-${column}`, type: 'image', x: x + .058, y: .034, w: .358, h: .337, src: '', fit: 'contain',
           locked: true, role: 'scan', sequence, scanCode, missing: sequence == null, cardIndex },
-        { id: `scan-divider-${page}-${column}`, type: 'shape', shape: 'line', x: x + .005, y: .382, w: .462, h: .006,
-          fill: 'transparent', stroke: '#777777', strokeWidth: .5, strokeStyle: 'fine-dashed', locked: true, role: 'scan-divider', cardIndex },
+        { id: `scan-divider-${page}-${column}`, type: 'shape', shape: 'line', x, y: .40104, w: .464287, h: .006,
+          fill: 'transparent', stroke: '#231f20', strokeWidth: .5, strokeStyle: 'illustrator-dashed', locked: true, role: 'scan-divider', cardIndex },
         { id: `caption-${page}-${column}`, type: 'text', x: x + .005, y: .393, w: .462, h: .078, text: '',
           placeholder: '', fontSize: 16, fontFamily: 'Times New Roman', color: '#111111',
           background: 'transparent', align: 'right', bold: false, italic: false, locked: true, role: 'caption', cardIndex },
-        { id: `caption-divider-${page}-${column}`, type: 'shape', shape: 'line', x: x + .005, y: .476, w: .462, h: .006,
-          fill: 'transparent', stroke: '#777777', strokeWidth: .5, strokeStyle: 'fine-dashed', locked: true, role: 'caption-divider', cardIndex },
+        { id: `caption-divider-${page}-${column}`, type: 'shape', shape: 'line', x, y: .473, w: .464287, h: .006,
+          fill: 'transparent', stroke: '#231f20', strokeWidth: .5, strokeStyle: 'illustrator-dashed', locked: true, role: 'caption-divider', cardIndex },
         { id: `body-${page}-${column}`, type: 'text', x: x + .005, y: .489, w: .462, h: .473, text: '',
           placeholder: '', fontSize: 15, fontFamily: 'Times New Roman', color: '#111111',
           background: 'transparent', align: 'left', bold: false, italic: false, locked: true, role: 'body', cardIndex },
@@ -73,10 +73,11 @@ export default function Editor({ project, user, onLogout }) {
   const [usersOpen, setUsersOpen] = useState(false)
   const [notice, setNotice] = useState('')
   const [revision, setRevision] = useState(project.documents.find((value) => value.slot === slot)?.revision || 0)
+  const [templateRevision, setTemplateRevision] = useState(project.templateRevision || 0)
   const fileRef = useRef(null)
   const replaceImageRef = useRef(null)
   const docxRef = useRef(null)
-  const collaboration = useCollaboration(project.id, slot, user)
+  const collaboration = useCollaboration(project.id, slot, user, templateRevision)
 
   useEffect(() => {
     setDocuments(project.documents)
@@ -91,17 +92,25 @@ export default function Editor({ project, user, onLogout }) {
     socket.onopen = () => socket.send('ready')
     socket.onmessage = (event) => {
       const message = JSON.parse(event.data)
-      if (message.type === 'document.saved' && message.slot === slot) setRevision(message.revision)
+      if (message.type === 'document.saved') {
+        if (message.slot === slot) setRevision(message.revision)
+        setDocuments((current) => current.map((entry) => entry.slot === message.slot
+          ? { ...entry, revision: message.revision, updatedBy: message.updatedBy } : entry))
+      }
       if (message.type === 'document.renamed') setDocuments((current) => current.map((entry) => (
         entry.slot === message.slot ? { ...entry, title: message.title, updatedBy: message.updatedBy } : entry
       )))
       if (message.type === 'release.published') setLastRelease(message.release)
+      if (message.type === 'template.updated') {
+        setTemplateRevision(message.templateRevision)
+        setNotice('Общий шаблон обновлён. Макет синхронизирован во всех документах.')
+      }
     }
     return () => socket.close()
   }, [project.id, slot])
 
   const select = (page, id) => { setActivePage(page); setSelected(id ? { page, id } : null) }
-  const change = (page, id, patch) => collaboration.change(page, id, patch)
+  const change = (page, id, patch) => collaboration.changeLayout(page, id, patch)
   const add = (type, extra = {}) => {
     const item = {
       id: newId(), type, x: .1, y: .1, w: type === 'text' ? .48 : .3, h: type === 'text' ? .13 : .25,
@@ -198,20 +207,22 @@ export default function Editor({ project, user, onLogout }) {
   }
 
   const saveTemplate = async () => {
-    if (!window.confirm('Сохранить текущее расположение, тексты и изображения как шаблон этого документа?')) return
+    if (!window.confirm('Сохранить текущую вёрстку как общий шаблон? Геометрия и стили будут применены ко всем 28 страницам и всем 4 документам; тексты и изображения сохранятся.')) return
     try {
-      await api(`/api/projects/${project.id}/documents/${slot}/template`, {
+      const value = await api(`/api/projects/${project.id}/documents/${slot}/template`, {
         method: 'PUT', body: JSON.stringify({ pages: collaboration.snapshot() }),
       })
-      setNotice('Шаблон сохранён. Содержимое полей остаётся редактируемым, а геометрия закреплена.')
+      if (value.pages) collaboration.replace(value.pages)
+      setTemplateRevision(value.templateRevision)
+      setNotice('Общий шаблон сохранён и применён ко всем 4 документам. Тексты и изображения сохранены.')
     } catch (reason) { setError(reason.message) }
   }
 
   const applyTemplate = async () => {
-    if (!window.confirm('Заменить текущее состояние сохранённым шаблоном?')) return
+    if (!window.confirm('Вернуть геометрию общего шаблона? Тексты и изображения не изменятся.')) return
     try {
       const value = await api(`/api/projects/${project.id}/documents/${slot}/template`)
-      collaboration.replace(value.pages); setSelected(null); setNotice('Сохранённый шаблон применён')
+      collaboration.replace(value.pages); setSelected(null); setNotice('Общий шаблон применён, содержимое сохранено')
     } catch (reason) { setError(reason.message) }
   }
 
@@ -322,8 +333,8 @@ export default function Editor({ project, user, onLogout }) {
           <option value="">Очистить…</option><option value="blank-page">Текущую страницу до белого листа</option><option value="reset-page">Вернуть шаблон на странице</option><option value="blank-document">Создать пустой документ</option>
         </select>
         <button onClick={createLayout} disabled={!collaboration.ready}>Новый редактируемый макет</button>
-        <button onClick={applyTemplate} disabled={!collaboration.ready}>Применить шаблон</button>
-        {(user.role === 'publisher' || user.role === 'admin') && <button onClick={saveTemplate} disabled={!collaboration.ready}>Сохранить как шаблон</button>}
+        <button onClick={applyTemplate} disabled={!collaboration.ready}>Вернуть общий шаблон</button>
+        {(user.role === 'publisher' || user.role === 'admin') && <button onClick={saveTemplate} disabled={!collaboration.ready}>Сохранить общий шаблон</button>}
         {pageBackground && <label className="page-color" title="Цвет чистой страницы">Фон <input type="color" value={pageBackground.color || '#ffffff'} onChange={(event) => change(activePage, pageBackground.id, { color: event.target.value })} /></label>}
         <button onClick={openHistory}>История</button>
         <button onClick={exportPdf} disabled={exporting || !collaboration.ready}>{exporting ? 'Готовим PDF…' : 'Скачать PDF'}</button>
@@ -353,8 +364,8 @@ export default function Editor({ project, user, onLogout }) {
           <label>Контур<input type="color" value={item.stroke || '#111111'} onChange={(event) => change(selected.page, item.id, { stroke: event.target.value })} /></label>
           <label>Толщина<input type="number" min="0.25" max="20" step="0.25" value={item.strokeWidth ?? 1} onChange={(event) => change(selected.page, item.id, { strokeWidth: Number(event.target.value) })} /></label>
           <label>Вид штриха<select value={item.strokeStyle || 'solid'} onChange={(event) => change(selected.page, item.id, { strokeStyle: event.target.value })}>{STROKE_STYLE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-          {adjustableHorizontal && <span className="property-hint">После разблокировки перетаскивается только вверх и вниз</span>}
-          {adjustableVertical && <span className="property-hint">После разблокировки перетаскивается только влево и вправо</span>}
+          {adjustableHorizontal && <span className="property-hint">Перетаскивание двигает линию вверх/вниз; круглые маркеры меняют её длину. Изменение повторяется на всех разворотах.</span>}
+          {adjustableVertical && <span className="property-hint">Перетаскивание двигает линию влево/вправо; круглые маркеры меняют её длину. Изменение повторяется на всех разворотах.</span>}
         </>}
         {item.type === 'cover' && <label>Цвет маски<input type="color" value={item.color} onChange={(event) => change(selected.page, item.id, { color: event.target.value })} /></label>}
         {item.type !== 'page-background' && <button onClick={() => change(selected.page, item.id, { locked: !item.locked })}>{adjustableLine ? (item.locked ? 'Разблокировать и перемещать' : 'Зафиксировать линию') : (item.locked ? 'Разблокировать положение' : 'Закрепить положение')}</button>}

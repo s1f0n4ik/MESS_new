@@ -133,6 +133,7 @@ def render_document(template: Path, content: dict, assets_root: Path, output: Pa
                 fill = None if not fill_value or fill_value == "transparent" else _color(fill_value, (1, 1, 1))
                 width = max(0.25, min(20, float(item.get("strokeWidth", 2))))
                 dashes = {
+                    "illustrator-dashed": "[6 6] 0",
                     "fine-dashed": "[3 3] 0",
                     "dashed": "[6 4] 0",
                     "long-dashed": "[10 5] 0",

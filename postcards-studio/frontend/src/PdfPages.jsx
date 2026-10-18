@@ -41,6 +41,17 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
       const dy = (next.clientY - start.y) / bounds.height
       if (mode === 'move' && adjustableHorizontal) onChange(number, item.id, { y: Math.max(0, Math.min(1 - item.h, start.item.y + dy)) })
       else if (mode === 'move' && adjustableVertical) onChange(number, item.id, { x: Math.max(0, Math.min(1 - item.w, start.item.x + dx)) })
+      else if (mode === 'line-start' && adjustableHorizontal) {
+        const nextX = Math.max(0, Math.min(start.item.x + start.item.w - .02, start.item.x + dx))
+        onChange(number, item.id, { x: nextX, w: start.item.w + start.item.x - nextX })
+      } else if (mode === 'line-end' && adjustableHorizontal) {
+        onChange(number, item.id, { w: Math.max(.02, Math.min(1 - start.item.x, start.item.w + dx)) })
+      } else if (mode === 'line-start' && adjustableVertical) {
+        const nextY = Math.max(0, Math.min(start.item.y + start.item.h - .02, start.item.y + dy))
+        onChange(number, item.id, { y: nextY, h: start.item.h + start.item.y - nextY })
+      } else if (mode === 'line-end' && adjustableVertical) {
+        onChange(number, item.id, { h: Math.max(.02, Math.min(1 - start.item.y, start.item.h + dy)) })
+      }
       else if (mode === 'move') onChange(number, item.id, { x: Math.max(0, Math.min(1 - item.w, start.item.x + dx)), y: Math.max(0, Math.min(1 - item.h, start.item.y + dy)) })
       else onChange(number, item.id, { w: Math.max(.03, Math.min(1 - item.x, start.item.w + dx)), h: Math.max(.03, Math.min(1 - item.y, start.item.h + dy)) })
     }
@@ -116,6 +127,10 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
               '--shape-width': `${item.strokeWidth ?? 2}px`, '--shape-style': item.strokeStyle || 'solid',
             }} />}
           {item.type !== 'page-background' && !item.locked && <div className="drag-surface" onPointerDown={(e) => pointerStart(e, item, 'move')} />}
+          {active && !item.locked && adjustableLine && <>
+            <button className="line-handle line-handle-start" aria-label="Сократить линию с начала" onPointerDown={(e) => pointerStart(e, item, 'line-start')} />
+            <button className="line-handle line-handle-end" aria-label="Сократить линию с конца" onPointerDown={(e) => pointerStart(e, item, 'line-end')} />
+          </>}
           {active && item.type !== 'page-background' && !item.locked && !adjustableLine && <button className="resize-handle" aria-label="Изменить размер" onPointerDown={(e) => pointerStart(e, item, 'resize')} />}
         </div>
       })}

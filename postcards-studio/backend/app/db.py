@@ -64,6 +64,16 @@ class DocumentTemplate(Base):
     updated_by: Mapped[str] = mapped_column(String(320))
 
 
+class ProjectTemplate(Base):
+    __tablename__ = "project_templates"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), unique=True, index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    content_json: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_by: Mapped[str] = mapped_column(String(320))
+
+
 class Release(Base):
     __tablename__ = "releases"
     id: Mapped[str] = mapped_column(String(80), primary_key=True)
