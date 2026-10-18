@@ -32,11 +32,15 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
 
   const pointerStart = (event, item, mode) => {
     event.preventDefault(); event.stopPropagation(); onSelect(number, item.id)
+    const pointerTarget = event.currentTarget
+    pointerTarget.setPointerCapture?.(event.pointerId)
+    document.body.classList.add('line-pointer-active')
     const bounds = pageRef.current.getBoundingClientRect()
     const start = { x: event.clientX, y: event.clientY, item: { ...item } }
     const adjustableHorizontal = item.type === 'shape' && ['scan-divider', 'caption-divider'].includes(item.role)
     const adjustableVertical = item.type === 'shape' && item.shape === 'vertical-line' && ['divider', 'outline-vertical'].includes(item.role)
     const move = (next) => {
+      next.preventDefault()
       const dx = (next.clientX - start.x) / bounds.width
       const dy = (next.clientY - start.y) / bounds.height
       if (mode === 'move' && adjustableHorizontal) onChange(number, item.id, { y: Math.max(0, Math.min(1 - item.h, start.item.y + dy)) })
@@ -55,8 +59,15 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
       else if (mode === 'move') onChange(number, item.id, { x: Math.max(0, Math.min(1 - item.w, start.item.x + dx)), y: Math.max(0, Math.min(1 - item.h, start.item.y + dy)) })
       else onChange(number, item.id, { w: Math.max(.03, Math.min(1 - item.x, start.item.w + dx)), h: Math.max(.03, Math.min(1 - item.y, start.item.h + dy)) })
     }
-    const stop = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop) }
-    window.addEventListener('pointermove', move); window.addEventListener('pointerup', stop)
+    const stop = (next) => {
+      next?.preventDefault()
+      document.body.classList.remove('line-pointer-active')
+      if (pointerTarget.hasPointerCapture?.(event.pointerId)) pointerTarget.releasePointerCapture(event.pointerId)
+      window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop)
+      window.removeEventListener('pointercancel', stop)
+    }
+    window.addEventListener('pointermove', move, { passive: false }); window.addEventListener('pointerup', stop, { passive: false })
+    window.addEventListener('pointercancel', stop, { passive: false })
   }
 
   const startIndentedParagraph = (event, item) => {
@@ -128,8 +139,8 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
             }} />}
           {item.type !== 'page-background' && !item.locked && <div className="drag-surface" onPointerDown={(e) => pointerStart(e, item, 'move')} />}
           {active && !item.locked && adjustableLine && <>
-            <button className="line-handle line-handle-start" aria-label="Сократить линию с начала" onPointerDown={(e) => pointerStart(e, item, 'line-start')} />
-            <button className="line-handle line-handle-end" aria-label="Сократить линию с конца" onPointerDown={(e) => pointerStart(e, item, 'line-end')} />
+            <button className="line-handle line-handle-start" aria-label="Сократить линию с начала" draggable="false" onDragStart={(e) => e.preventDefault()} onPointerDown={(e) => pointerStart(e, item, 'line-start')} />
+            <button className="line-handle line-handle-end" aria-label="Сократить линию с конца" draggable="false" onDragStart={(e) => e.preventDefault()} onPointerDown={(e) => pointerStart(e, item, 'line-end')} />
           </>}
           {active && item.type !== 'page-background' && !item.locked && !adjustableLine && <button className="resize-handle" aria-label="Изменить размер" onPointerDown={(e) => pointerStart(e, item, 'resize')} />}
         </div>

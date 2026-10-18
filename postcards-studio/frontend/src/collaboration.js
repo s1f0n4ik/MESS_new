@@ -183,18 +183,23 @@ export function useCollaboration(projectId, slot, user, templateRevision = 0) {
           element.set(key, deltas[key] === undefined ? value : Number(element.get(key) || 0) + deltas[key])
         }
         if (role === 'outline-vertical' && hasGeometry) {
-          const outline = list.toArray().find((candidate) => candidate instanceof Y.Map &&
-            candidate.get('role') === 'outline' && candidate.get('cardIndex') === element.get('cardIndex'))
-          if (!outline) continue
+          const horizontalBounds = list.toArray().filter((candidate) => candidate instanceof Y.Map &&
+            ['outline', 'scan-divider', 'caption-divider'].includes(candidate.get('role')) &&
+            candidate.get('cardIndex') === element.get('cardIndex'))
+          const outline = horizontalBounds.find((candidate) => candidate.get('role') === 'outline')
           const center = Number(element.get('x') || 0) + Number(element.get('w') || 0) / 2
-          if (elementSide === 'left' && verticalSideChange) {
-            const right = Number(outline.get('x') || 0) + Number(outline.get('w') || 0)
-            outline.set('x', center)
-            outline.set('w', Math.max(.001, right - center))
-          } else if (elementSide === 'right' && verticalSideChange) {
-            outline.set('w', Math.max(.001, center - Number(outline.get('x') || 0)))
+          if (verticalSideChange) {
+            for (const horizontal of horizontalBounds) {
+              if (elementSide === 'left') {
+                const right = Number(horizontal.get('x') || 0) + Number(horizontal.get('w') || 0)
+                horizontal.set('x', center)
+                horizontal.set('w', Math.max(.001, right - center))
+              } else {
+                horizontal.set('w', Math.max(.001, center - Number(horizontal.get('x') || 0)))
+              }
+            }
           }
-          if (patch.y !== undefined || patch.h !== undefined) {
+          if (outline && (patch.y !== undefined || patch.h !== undefined)) {
             outline.set('y', Number(element.get('y') || 0))
             outline.set('h', Math.max(.001, Number(element.get('h') || 0)))
           }
