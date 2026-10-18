@@ -140,11 +140,17 @@ class StudioApiTests(unittest.TestCase):
             {"id": "dashed-shape", "type": "shape", "x": .15, "y": .4, "w": .4, "h": .25,
              "shape": "ellipse", "fill": "transparent", "stroke": "#112233", "strokeWidth": 3,
              "strokeStyle": "dash-dot-dot"},
+            {"id": "thin-horizontal", "type": "shape", "x": .02, "y": .7, "w": .45, "h": .006,
+             "shape": "line", "stroke": "#112233", "strokeWidth": .5, "strokeStyle": "illustrator-dashed"},
+            {"id": "thin-vertical", "type": "shape", "x": .49, "y": .05, "w": .004, "h": .9,
+             "shape": "vertical-line", "stroke": "#112233", "strokeWidth": .5, "strokeStyle": "illustrator-dashed"},
         ]})
         self.assertEqual(pages["1"][0]["type"], "page-background")
         self.assertEqual(pages["1"][1]["fontFamily"], "Georgia")
         self.assertTrue(pages["1"][1]["italic"])
         self.assertEqual(pages["1"][2]["strokeStyle"], "dash-dot-dot")
+        self.assertEqual(pages["1"][3]["h"], .006)
+        self.assertEqual(pages["1"][4]["w"], .004)
 
         root = Path(self.temp.name)
         output = root / "extended.pdf"

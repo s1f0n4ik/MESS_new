@@ -72,6 +72,7 @@ export default function Editor({ project, user, onLogout }) {
   const [history, setHistory] = useState(null)
   const [usersOpen, setUsersOpen] = useState(false)
   const [notice, setNotice] = useState('')
+  const [templateSaving, setTemplateSaving] = useState(false)
   const [revision, setRevision] = useState(project.documents.find((value) => value.slot === slot)?.revision || 0)
   const [templateRevision, setTemplateRevision] = useState(project.templateRevision || 0)
   const fileRef = useRef(null)
@@ -206,16 +207,27 @@ export default function Editor({ project, user, onLogout }) {
     } catch (reason) { setError(reason.message); setNotice('') }
   }
 
-  const saveTemplate = async () => {
-    if (!window.confirm('Сохранить текущую вёрстку как общий шаблон? Геометрия и стили будут применены ко всем 28 страницам и всем 4 документам; тексты и изображения сохранятся.')) return
+  const saveTemplate = async ({ confirm = true, lineLocked = false } = {}) => {
+    if (confirm && !window.confirm('Сохранить текущую вёрстку как общий шаблон? Геометрия и стили будут применены ко всем 28 страницам и всем 4 документам; тексты и изображения сохранятся.')) return
+    setTemplateSaving(true); setError('')
     try {
       const value = await api(`/api/projects/${project.id}/documents/${slot}/template`, {
         method: 'PUT', body: JSON.stringify({ pages: collaboration.snapshot() }),
       })
       if (value.pages) collaboration.replace(value.pages)
       setTemplateRevision(value.templateRevision)
-      setNotice('Общий шаблон сохранён и применён ко всем 4 документам. Тексты и изображения сохранены.')
+      setNotice(lineLocked
+        ? 'Линия зафиксирована и синхронизирована на всех разворотах и во всех 4 документах.'
+        : 'Общий шаблон сохранён и применён ко всем 4 документам. Тексты и изображения сохранены.')
     } catch (reason) { setError(reason.message) }
+    finally { setTemplateSaving(false) }
+  }
+
+  const toggleItemLock = async () => {
+    if (!item || templateSaving) return
+    const lockingLine = adjustableLine && !item.locked
+    change(selected.page, item.id, { locked: !item.locked })
+    if (lockingLine) await saveTemplate({ confirm: false, lineLocked: true })
   }
 
   const applyTemplate = async () => {
@@ -334,7 +346,7 @@ export default function Editor({ project, user, onLogout }) {
         </select>
         <button onClick={createLayout} disabled={!collaboration.ready}>Новый редактируемый макет</button>
         <button onClick={applyTemplate} disabled={!collaboration.ready}>Вернуть общий шаблон</button>
-        {(user.role === 'publisher' || user.role === 'admin') && <button onClick={saveTemplate} disabled={!collaboration.ready}>Сохранить общий шаблон</button>}
+        {(user.role === 'publisher' || user.role === 'admin') && <button onClick={() => saveTemplate()} disabled={!collaboration.ready || templateSaving}>{templateSaving ? 'Синхронизация…' : 'Сохранить общий шаблон'}</button>}
         {pageBackground && <label className="page-color" title="Цвет чистой страницы">Фон <input type="color" value={pageBackground.color || '#ffffff'} onChange={(event) => change(activePage, pageBackground.id, { color: event.target.value })} /></label>}
         <button onClick={openHistory}>История</button>
         <button onClick={exportPdf} disabled={exporting || !collaboration.ready}>{exporting ? 'Готовим PDF…' : 'Скачать PDF'}</button>
@@ -368,7 +380,7 @@ export default function Editor({ project, user, onLogout }) {
           {adjustableVertical && <span className="property-hint">Перетаскивание двигает линию влево/вправо; круглые маркеры меняют её длину. Изменение повторяется на всех разворотах.</span>}
         </>}
         {item.type === 'cover' && <label>Цвет маски<input type="color" value={item.color} onChange={(event) => change(selected.page, item.id, { color: event.target.value })} /></label>}
-        {item.type !== 'page-background' && <button onClick={() => change(selected.page, item.id, { locked: !item.locked })}>{adjustableLine ? (item.locked ? 'Разблокировать и перемещать' : 'Зафиксировать линию') : (item.locked ? 'Разблокировать положение' : 'Закрепить положение')}</button>}
+        {item.type !== 'page-background' && <button onClick={toggleItemLock} disabled={templateSaving}>{adjustableLine ? (item.locked ? 'Разблокировать и перемещать' : (templateSaving ? 'Синхронизация…' : 'Зафиксировать и синхронизировать')) : (item.locked ? 'Разблокировать положение' : 'Закрепить положение')}</button>}
       </div>}
       {(error || collaboration.error) && <div className="error-banner">{error || collaboration.error}</div>}
       {notice && !error && !collaboration.error && <div className="notice-banner">{notice}</div>}

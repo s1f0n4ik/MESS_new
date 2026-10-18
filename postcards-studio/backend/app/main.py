@@ -120,6 +120,9 @@ def clean_pages(raw_pages: dict) -> dict:
                     "type": raw["type"]}
             for key, default, lower, upper in (("x", 0.1, 0, 1), ("y", 0.1, 0, 1),
                                                 ("w", 0.3, 0.01, 1), ("h", 0.1, 0.01, 1)):
+                if raw.get("type") == "shape" and ((key == "h" and raw.get("shape") == "line") or
+                                                     (key == "w" and raw.get("shape") == "vertical-line")):
+                    lower = 0.001
                 try:
                     value = float(raw.get(key, default))
                 except (TypeError, ValueError):
