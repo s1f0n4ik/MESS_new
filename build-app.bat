@@ -22,8 +22,11 @@ echo [4/4] tauri build
 call npx tauri build || goto :fail
 
 echo.
-echo OK. Installer:
-dir /b src-tauri\target\release\bundle\nsis\*.exe
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "$version = (Get-Content -Raw 'src-tauri\tauri.conf.json' ^| ConvertFrom-Json).version; Join-Path (Resolve-Path 'src-tauri\target\release\bundle\nsis') ('Postcards_' + $version + '_x64-setup.exe')"`) do set INSTALLER=%%i
+if not exist "%INSTALLER%" (echo Expected installer was not created: %INSTALLER% & goto :fail)
+echo OK. Current installer:
+echo %INSTALLER%
+echo Older installers in the same folder are previous builds and can be archived or deleted.
 exit /b 0
 
 :fail
