@@ -150,22 +150,54 @@ export function useCollaboration(projectId, slot, user, templateRevision = 0) {
       }
       return
     }
-    const side = source.get('side')
+    const verticalSide = (element, list) => {
+      const stored = element.get('side')
+      if (stored === 'left' || stored === 'right') return stored
+      const outline = list.toArray().find((candidate) => candidate instanceof Y.Map &&
+        candidate.get('role') === 'outline' && candidate.get('cardIndex') === element.get('cardIndex'))
+      if (!outline) return 'left'
+      const center = Number(element.get('x') || 0) + Number(element.get('w') || 0) / 2
+      const middle = Number(outline.get('x') || 0) + Number(outline.get('w') || 0) / 2
+      return center <= middle ? 'left' : 'right'
+    }
+    const side = role === 'outline-vertical' ? verticalSide(source, sourceList) : source.get('side')
     const deltas = {}
     for (const key of ['x', 'y', 'w', 'h']) if (patch[key] !== undefined) {
       deltas[key] = Number(patch[key]) - Number(source.get(key) || 0)
     }
     const hasGeometry = Object.keys(deltas).length > 0
+    const verticalSideChange = role === 'outline-vertical' && (patch.x !== undefined || patch.w !== undefined)
     for (const [targetPage, list] of pagesMap.entries()) {
       if (!(list instanceof Y.Array)) continue
       for (const element of list.toArray()) {
         if (!(element instanceof Y.Map) || element.get('role') !== role) continue
-        if (role === 'outline-vertical' && element.get('side') !== side) continue
+        const elementSide = role === 'outline-vertical' ? verticalSide(element, list) : element.get('side')
+        // A horizontal move changes the same side of every card. Length and
+        // styling changes apply to both sides so the whole contour stays closed.
+        if (verticalSideChange && elementSide !== side) continue
         if (role === 'body' && hasGeometry && Number(targetPage) % 2 !== Number(page) % 2) continue
+        if (role === 'outline-vertical' && !element.get('side')) element.set('side', elementSide)
         for (const [key, value] of Object.entries(patch)) {
           // Unlocking is local to the selected line; geometry and styling are global.
           if (key === 'locked' && element !== source) continue
           element.set(key, deltas[key] === undefined ? value : Number(element.get(key) || 0) + deltas[key])
+        }
+        if (role === 'outline-vertical' && hasGeometry) {
+          const outline = list.toArray().find((candidate) => candidate instanceof Y.Map &&
+            candidate.get('role') === 'outline' && candidate.get('cardIndex') === element.get('cardIndex'))
+          if (!outline) continue
+          const center = Number(element.get('x') || 0) + Number(element.get('w') || 0) / 2
+          if (elementSide === 'left' && verticalSideChange) {
+            const right = Number(outline.get('x') || 0) + Number(outline.get('w') || 0)
+            outline.set('x', center)
+            outline.set('w', Math.max(.001, right - center))
+          } else if (elementSide === 'right' && verticalSideChange) {
+            outline.set('w', Math.max(.001, center - Number(outline.get('x') || 0)))
+          }
+          if (patch.y !== undefined || patch.h !== undefined) {
+            outline.set('y', Number(element.get('y') || 0))
+            outline.set('h', Math.max(.001, Number(element.get('h') || 0)))
+          }
         }
       }
     }
