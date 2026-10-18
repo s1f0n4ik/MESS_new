@@ -151,6 +151,9 @@ def render_document(template: Path, content: dict, assets_root: Path, output: Pa
                 elif shape == "vertical-line":
                     middle = (rect.x0 + rect.x1) / 2
                     page.draw_line((middle, rect.y0), (middle, rect.y1), color=stroke, width=width, dashes=dashes, overlay=True)
+                elif shape == "horizontal-frame":
+                    page.draw_line((rect.x0, rect.y0), (rect.x1, rect.y0), color=stroke, width=width, dashes=dashes, overlay=True)
+                    page.draw_line((rect.x0, rect.y1), (rect.x1, rect.y1), color=stroke, width=width, dashes=dashes, overlay=True)
                 else:
                     page.draw_rect(rect, color=stroke, fill=fill, width=width, dashes=dashes, overlay=True)
     doc.set_metadata({"title": "Postcards Studio publication", "creator": "Postcards Studio"})

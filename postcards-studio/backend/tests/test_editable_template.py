@@ -52,7 +52,10 @@ class EditableTemplateTests(unittest.TestCase):
         self.assertEqual(len(SPREAD_SCANS), 14)
         self.assertTrue(all(len([item for item in values if item.get("role") == "divider"]) == 1
                             for values in pages.values()))
+        self.assertTrue(all(len([item for item in values if item.get("role") == "outline-vertical"]) == 4
+                            for values in pages.values()))
         outlines = [item for item in pages["1"] if item.get("role") == "outline"]
+        vertical_outlines = [item for item in pages["1"] if item.get("role") == "outline-vertical"]
         divider = next(item for item in pages["1"] if item.get("role") == "divider")
         self.assertEqual(divider["shape"], "vertical-line")
         self.assertEqual(divider["strokeStyle"], "solid")
@@ -61,6 +64,11 @@ class EditableTemplateTests(unittest.TestCase):
         self.assertGreater(outlines[1]["x"], 0.5)
         self.assertAlmostEqual(0.5 - (outlines[0]["x"] + outlines[0]["w"]), outlines[1]["x"] - 0.5)
         self.assertTrue(all(item["strokeStyle"] == "dashed" for item in outlines))
+        self.assertTrue(all(item["shape"] == "horizontal-frame" for item in outlines))
+        self.assertEqual(len(vertical_outlines), 4)
+        self.assertTrue(all(item["shape"] == "vertical-line" for item in vertical_outlines))
+        self.assertEqual(sorted(round(item["x"] + item["w"] / 2, 3) for item in vertical_outlines),
+                         [0.018, 0.49, 0.51, 0.982])
         dividers = [item for item in pages["1"] if item.get("role") in {"scan-divider", "caption-divider"}]
         self.assertTrue(all(item["strokeStyle"] == "fine-dashed" for item in dividers))
         self.assertTrue(all(item["strokeWidth"] == 0.5 for item in dividers))

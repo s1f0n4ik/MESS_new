@@ -30,8 +30,12 @@ function editableLayout(pageCount = 28) {
       const [sequence, scanCode] = SPREAD_SCANS[Math.floor((page - 1) / 2)][column]
       const x = column ? .510 : .018
       items.push(
-        { id: `outline-${page}-${column}`, type: 'shape', shape: 'rectangle', x, y: .032, w: .472, h: .936,
+        { id: `outline-${page}-${column}`, type: 'shape', shape: 'horizontal-frame', x, y: .032, w: .472, h: .936,
           fill: 'transparent', stroke: '#777777', strokeWidth: 1, strokeStyle: 'dashed', locked: true, role: 'outline', cardIndex },
+        { id: `outline-left-${page}-${column}`, type: 'shape', shape: 'vertical-line', x: x - .002, y: .032, w: .004, h: .936,
+          fill: 'transparent', stroke: '#777777', strokeWidth: 1, strokeStyle: 'dashed', locked: true, role: 'outline-vertical', side: 'left', cardIndex },
+        { id: `outline-right-${page}-${column}`, type: 'shape', shape: 'vertical-line', x: x + .470, y: .032, w: .004, h: .936,
+          fill: 'transparent', stroke: '#777777', strokeWidth: 1, strokeStyle: 'dashed', locked: true, role: 'outline-vertical', side: 'right', cardIndex },
       )
       if (page % 2) items.push(
         { id: `scan-${page}-${column}`, type: 'image', x: x + .058, y: .034, w: .358, h: .337, src: '', fit: 'contain',
@@ -113,7 +117,9 @@ export default function Editor({ project, user, onLogout }) {
     collaboration.remove(selected.page, selected.id); setSelected(null)
   }
   const item = selected ? (collaboration.pages?.[selected.page] || []).find((value) => value.id === selected.id) : null
-  const adjustableDivider = item?.type === 'shape' && ['scan-divider', 'caption-divider'].includes(item.role)
+  const adjustableHorizontal = item?.type === 'shape' && ['scan-divider', 'caption-divider'].includes(item.role)
+  const adjustableVertical = item?.type === 'shape' && item.shape === 'vertical-line' && ['divider', 'outline-vertical'].includes(item.role)
+  const adjustableLine = adjustableHorizontal || adjustableVertical
   const pageBackground = (collaboration.pages?.[activePage] || []).find((value) => value.type === 'page-background')
 
   const duplicate = () => {
@@ -135,6 +141,8 @@ export default function Editor({ project, user, onLogout }) {
       } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd' && item && !item.locked) {
         event.preventDefault(); duplicate()
       } else if (item && !item.locked && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+        if (adjustableHorizontal && !['ArrowUp', 'ArrowDown'].includes(event.key)) return
+        if (adjustableVertical && !['ArrowLeft', 'ArrowRight'].includes(event.key)) return
         event.preventDefault()
         const step = event.shiftKey ? .02 : .005
         const patch = {}
@@ -322,7 +330,7 @@ export default function Editor({ project, user, onLogout }) {
         {(user.role === 'publisher' || user.role === 'admin') && <button className="primary" onClick={publish} disabled={publishing || !collaboration.ready}>{publishing ? 'Собираем PDF…' : 'Опубликовать'}</button>}
         <span className="toolbar-spacer" /><span className={`status ${collaboration.status.includes('Офлайн') ? 'dirty' : ''}`}>{collaboration.status}</span>
       </div>
-      {item && <div className="properties"><b>{item.type === 'text' ? 'Текст' : item.type === 'image' ? 'Изображение' : adjustableDivider ? 'Горизонтальная линия' : item.type === 'shape' ? 'Фигура' : 'Маска'}</b>
+      {item && <div className="properties"><b>{item.type === 'text' ? 'Текст' : item.type === 'image' ? 'Изображение' : adjustableHorizontal ? 'Горизонтальная линия' : adjustableVertical ? 'Вертикальная линия' : item.type === 'shape' ? 'Фигура' : 'Маска'}</b>
         {item.type === 'text' && <>
           <label>Единый шрифт<select value={item.fontFamily || 'Times New Roman'} onChange={(event) => collaboration.changeAllText({ fontFamily: event.target.value })}>{FONT_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label>Размер<input type="number" min="6" max="240" value={item.fontSize} onChange={(event) => change(selected.page, item.id, { fontSize: Number(event.target.value) })} /></label>
@@ -339,16 +347,17 @@ export default function Editor({ project, user, onLogout }) {
           <button onClick={() => { replaceImageRef.current = selected; fileRef.current?.click() }}>Заменить файл</button>
         </>}
         {item.type === 'shape' && <>
-          {!adjustableDivider && <label>Фигура<select value={item.shape || 'rectangle'} onChange={(event) => change(selected.page, item.id, { shape: event.target.value })}><option value="rectangle">Прямоугольник</option><option value="ellipse">Эллипс</option><option value="line">Линия</option></select></label>}
+          {!adjustableLine && <label>Фигура<select value={item.shape || 'rectangle'} onChange={(event) => change(selected.page, item.id, { shape: event.target.value })}><option value="rectangle">Прямоугольник</option><option value="ellipse">Эллипс</option><option value="line">Линия</option></select></label>}
           {!['line', 'vertical-line'].includes(item.shape) && <label>Заливка<input type="color" value={item.fill === 'transparent' ? '#ffffff' : item.fill} onChange={(event) => change(selected.page, item.id, { fill: event.target.value })} /></label>}
           {!['line', 'vertical-line'].includes(item.shape) && <button onClick={() => change(selected.page, item.id, { fill: 'transparent' })}>Без заливки</button>}
           <label>Контур<input type="color" value={item.stroke || '#111111'} onChange={(event) => change(selected.page, item.id, { stroke: event.target.value })} /></label>
           <label>Толщина<input type="number" min="0.25" max="20" step="0.25" value={item.strokeWidth ?? 1} onChange={(event) => change(selected.page, item.id, { strokeWidth: Number(event.target.value) })} /></label>
           <label>Вид штриха<select value={item.strokeStyle || 'solid'} onChange={(event) => change(selected.page, item.id, { strokeStyle: event.target.value })}>{STROKE_STYLE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-          {adjustableDivider && <span className="property-hint">После разблокировки перетаскивается только вверх и вниз</span>}
+          {adjustableHorizontal && <span className="property-hint">После разблокировки перетаскивается только вверх и вниз</span>}
+          {adjustableVertical && <span className="property-hint">После разблокировки перетаскивается только влево и вправо</span>}
         </>}
         {item.type === 'cover' && <label>Цвет маски<input type="color" value={item.color} onChange={(event) => change(selected.page, item.id, { color: event.target.value })} /></label>}
-        {item.type !== 'page-background' && <button onClick={() => change(selected.page, item.id, { locked: !item.locked })}>{adjustableDivider ? (item.locked ? 'Разблокировать и перемещать' : 'Зафиксировать линию') : (item.locked ? 'Разблокировать положение' : 'Закрепить положение')}</button>}
+        {item.type !== 'page-background' && <button onClick={() => change(selected.page, item.id, { locked: !item.locked })}>{adjustableLine ? (item.locked ? 'Разблокировать и перемещать' : 'Зафиксировать линию') : (item.locked ? 'Разблокировать положение' : 'Закрепить положение')}</button>}
       </div>}
       {(error || collaboration.error) && <div className="error-banner">{error || collaboration.error}</div>}
       {notice && !error && !collaboration.error && <div className="notice-banner">{notice}</div>}

@@ -8,13 +8,13 @@ const primitiveKeys = [
   'id', 'type', 'x', 'y', 'w', 'h', 'fontSize', 'fontFamily', 'color', 'background',
   'align', 'bold', 'italic', 'src', 'fit', 'shape', 'fill', 'stroke',
   'strokeWidth', 'strokeStyle', 'locked', 'role', 'placeholder', 'sequence',
-  'cardIndex', 'sourceLabel', 'scanCode', 'missing',
+  'cardIndex', 'sourceLabel', 'scanCode', 'missing', 'side',
 ]
 const EDITOR_ORIGIN = Symbol('postcards-editor')
 // Bump this value whenever the persisted Yjs document schema/bootstrap changes.
 // A new room also creates a new IndexedDB namespace, so an old browser tab cannot
 // merge a stale local copy back into the freshly migrated server document.
-const COLLABORATION_LAYOUT_VERSION = 'layout-v6'
+const COLLABORATION_LAYOUT_VERSION = 'layout-v7'
 
 function toElement(value) {
   const element = new Y.Map()

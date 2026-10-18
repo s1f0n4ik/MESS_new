@@ -85,9 +85,16 @@ def blank_editable_layout(page_count: int = PAGE_COUNT) -> dict[str, list[dict]]
             inner_width = column_width - 0.010
             items.append(_item(
                 f"outline-{page}-{column}", "shape", x, 0.032, column_width, 0.936,
-                shape="rectangle", fill="transparent", stroke="#777777", strokeWidth=1,
+                shape="horizontal-frame", fill="transparent", stroke="#777777", strokeWidth=1,
                 strokeStyle="dashed", locked=True, role="outline", cardIndex=card_index,
             ))
+            for side, line_x in (("left", x), ("right", x + column_width)):
+                items.append(_item(
+                    f"outline-{side}-{page}-{column}", "shape", line_x - 0.002, 0.032, 0.004, 0.936,
+                    shape="vertical-line", fill="transparent", stroke="#777777", strokeWidth=1,
+                    strokeStyle="dashed", locked=True, role="outline-vertical", side=side,
+                    cardIndex=card_index,
+                ))
             if page % 2:
                 items.extend([
                     _item(

@@ -34,11 +34,13 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
     event.preventDefault(); event.stopPropagation(); onSelect(number, item.id)
     const bounds = pageRef.current.getBoundingClientRect()
     const start = { x: event.clientX, y: event.clientY, item: { ...item } }
-    const adjustableDivider = item.type === 'shape' && ['scan-divider', 'caption-divider'].includes(item.role)
+    const adjustableHorizontal = item.type === 'shape' && ['scan-divider', 'caption-divider'].includes(item.role)
+    const adjustableVertical = item.type === 'shape' && item.shape === 'vertical-line' && ['divider', 'outline-vertical'].includes(item.role)
     const move = (next) => {
       const dx = (next.clientX - start.x) / bounds.width
       const dy = (next.clientY - start.y) / bounds.height
-      if (mode === 'move' && adjustableDivider) onChange(number, item.id, { y: Math.max(0, Math.min(1 - item.h, start.item.y + dy)) })
+      if (mode === 'move' && adjustableHorizontal) onChange(number, item.id, { y: Math.max(0, Math.min(1 - item.h, start.item.y + dy)) })
+      else if (mode === 'move' && adjustableVertical) onChange(number, item.id, { x: Math.max(0, Math.min(1 - item.w, start.item.x + dx)) })
       else if (mode === 'move') onChange(number, item.id, { x: Math.max(0, Math.min(1 - item.w, start.item.x + dx)), y: Math.max(0, Math.min(1 - item.h, start.item.y + dy)) })
       else onChange(number, item.id, { w: Math.max(.03, Math.min(1 - item.x, start.item.w + dx)), h: Math.max(.03, Math.min(1 - item.y, start.item.h + dy)) })
     }
@@ -75,10 +77,12 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
       <canvas ref={canvasRef} />
       {[...(items || [])].sort((a, b) => (a.type === 'page-background' ? -1 : 0) - (b.type === 'page-background' ? -1 : 0)).map((item) => {
         const active = selected?.page === number && selected?.id === item.id
-        const adjustableDivider = item.type === 'shape' && ['scan-divider', 'caption-divider'].includes(item.role)
+        const adjustableHorizontal = item.type === 'shape' && ['scan-divider', 'caption-divider'].includes(item.role)
+        const adjustableVertical = item.type === 'shape' && item.shape === 'vertical-line' && ['divider', 'outline-vertical'].includes(item.role)
+        const adjustableLine = adjustableHorizontal || adjustableVertical
         const style = { left: `${item.x * 100}%`, top: `${item.y * 100}%`, width: `${item.w * 100}%`, height: `${item.h * 100}%` }
-        if (item.type === 'page-background' || (item.type === 'shape' && item.locked && !adjustableDivider)) style.pointerEvents = 'none'
-        return <div key={item.id} className={`editor-item ${active ? 'selected' : ''} ${item.locked ? 'locked' : ''} ${adjustableDivider ? 'adjustable-divider' : ''} item-${item.type}`} style={style}
+        if (item.type === 'page-background' || (item.type === 'shape' && item.locked && !adjustableLine)) style.pointerEvents = 'none'
+        return <div key={item.id} className={`editor-item ${active ? 'selected' : ''} ${item.locked ? 'locked' : ''} ${adjustableHorizontal ? 'adjustable-horizontal' : ''} ${adjustableVertical ? 'adjustable-vertical' : ''} item-${item.type}`} style={style}
           onPointerDown={(event) => { if (item.locked) { event.stopPropagation(); onSelect(number, item.id) } }}>
           {item.type === 'text' && <textarea value={item.text} placeholder={item.placeholder || ''} onFocus={() => {
             onSelect(number, item.id)
@@ -97,19 +101,22 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
             : <div className="image-placeholder"><b>Скан {item.scanCode || item.sequence || item.cardIndex || ''}</b><span>Выберите слот и загрузите файл</span></div>)}
           {item.type === 'cover' && <div className="cover" style={{ background: item.color || '#fff' }} />}
           {item.type === 'page-background' && <div className="page-background" style={{ background: item.color || '#fff' }} />}
-          {item.type === 'shape' && ['line', 'vertical-line'].includes(item.shape)
+          {item.type === 'shape' && ['line', 'vertical-line', 'horizontal-frame'].includes(item.shape)
             ? <svg className="shape shape-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-              <line x1={item.shape === 'vertical-line' ? 50 : 0} y1={item.shape === 'vertical-line' ? 0 : 50}
-                x2={item.shape === 'vertical-line' ? 50 : 100} y2={item.shape === 'vertical-line' ? 100 : 50}
-                stroke={item.stroke || '#111111'} strokeWidth={item.strokeWidth ?? 1}
-                strokeDasharray={STROKE_DASHARRAYS[item.strokeStyle || 'solid']} vectorEffect="non-scaling-stroke" />
+              {item.shape === 'horizontal-frame' ? <>
+                <line x1="0" y1="0" x2="100" y2="0" stroke={item.stroke || '#111111'} strokeWidth={item.strokeWidth ?? 1} strokeDasharray={STROKE_DASHARRAYS[item.strokeStyle || 'solid']} vectorEffect="non-scaling-stroke" />
+                <line x1="0" y1="100" x2="100" y2="100" stroke={item.stroke || '#111111'} strokeWidth={item.strokeWidth ?? 1} strokeDasharray={STROKE_DASHARRAYS[item.strokeStyle || 'solid']} vectorEffect="non-scaling-stroke" />
+              </> : <line x1={item.shape === 'vertical-line' ? 50 : 0} y1={item.shape === 'vertical-line' ? 0 : 50}
+                  x2={item.shape === 'vertical-line' ? 50 : 100} y2={item.shape === 'vertical-line' ? 100 : 50}
+                  stroke={item.stroke || '#111111'} strokeWidth={item.strokeWidth ?? 1}
+                  strokeDasharray={STROKE_DASHARRAYS[item.strokeStyle || 'solid']} vectorEffect="non-scaling-stroke" />}
             </svg>
             : item.type === 'shape' && <div className={`shape shape-${item.shape || 'rectangle'}`} style={{
               '--shape-fill': item.fill || 'transparent', '--shape-stroke': item.stroke || '#111111',
               '--shape-width': `${item.strokeWidth ?? 2}px`, '--shape-style': item.strokeStyle || 'solid',
             }} />}
           {item.type !== 'page-background' && !item.locked && <div className="drag-surface" onPointerDown={(e) => pointerStart(e, item, 'move')} />}
-          {active && item.type !== 'page-background' && !item.locked && !adjustableDivider && <button className="resize-handle" aria-label="Изменить размер" onPointerDown={(e) => pointerStart(e, item, 'resize')} />}
+          {active && item.type !== 'page-background' && !item.locked && !adjustableLine && <button className="resize-handle" aria-label="Изменить размер" onPointerDown={(e) => pointerStart(e, item, 'resize')} />}
         </div>
       })}
     </div>
