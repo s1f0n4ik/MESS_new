@@ -295,11 +295,17 @@ def find_document(db: Session, project_id: int, slot: str) -> Document:
     return document
 
 
-def parse_collaboration_name(value: str) -> tuple[int, str]:
-    match = re.fullmatch(r"project-(\d+)-(pdf[1-4])-layout-v8-template-\d+", value)
+def parse_collaboration_name(value: str) -> tuple[int, str, int]:
+    match = re.fullmatch(r"project-(\d+)-(pdf[1-4])-layout-v8-template-(\d+)", value)
     if not match:
         raise HTTPException(400, "Некорректное имя совместного документа")
-    return int(match.group(1)), match.group(2)
+    return int(match.group(1)), match.group(2), int(match.group(3))
+
+
+def require_current_template_revision(db: Session, project_id: int, revision: int) -> None:
+    current = db.scalar(select(ProjectTemplate.revision).where(ProjectTemplate.project_id == project_id)) or 0
+    if revision != current:
+        raise HTTPException(409, "Шаблон обновлён. Перезагрузите страницу редактора")
 
 
 def require_collaboration_service(x_collaboration_secret: str = Header(default="")) -> None:
@@ -361,7 +367,8 @@ def collaboration_auth(body: CollaborationAuthBody,
     user = db.get(User, int(payload["sub"]))
     if not user:
         raise HTTPException(401, "Пользователь не найден")
-    project_id, slot = parse_collaboration_name(body.documentName)
+    project_id, slot, template_revision = parse_collaboration_name(body.documentName)
+    require_current_template_revision(db, project_id, template_revision)
     find_document(db, project_id, slot)
     return {"user": user_view(user), "projectId": project_id, "slot": slot}
 
@@ -371,7 +378,8 @@ def collaboration_document(document_name: str,
                            access: None = Depends(require_collaboration_service),
                            db: Session = Depends(session_scope)):
     del access
-    project_id, slot = parse_collaboration_name(document_name)
+    project_id, slot, template_revision = parse_collaboration_name(document_name)
+    require_current_template_revision(db, project_id, template_revision)
     return document_view(find_document(db, project_id, slot))
 
 
@@ -380,7 +388,8 @@ async def collaboration_store(document_name: str, body: CollaborationSnapshotBod
                               access: None = Depends(require_collaboration_service),
                               db: Session = Depends(session_scope)):
     del access
-    project_id, slot = parse_collaboration_name(document_name)
+    project_id, slot, template_revision = parse_collaboration_name(document_name)
+    require_current_template_revision(db, project_id, template_revision)
     document = find_document(db, project_id, slot)
     return await store_collaboration_snapshot(document, body.pages, body.updatedBy or "collaboration", db,
                                               checkpoint=body.checkpoint)

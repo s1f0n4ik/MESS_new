@@ -225,6 +225,17 @@ class StudioApiTests(unittest.TestCase):
         self.assertEqual(loaded_other.status_code, 200, loaded_other.text)
         self.assertEqual(loaded_other.json()["pages"]["1"][2]["text"], "Текст второго документа")
         self.assertEqual(self.client.get("/api/projects/1", headers=self.headers).json()["templateRevision"], 1)
+        service_headers = {"X-Collaboration-Secret": "development-collaboration-secret"}
+        stale_room = self.client.post(
+            "/api/internal/collaboration/documents/project-1-pdf1-layout-v8-template-0",
+            headers=service_headers, json={"pages": template_pages, "updatedBy": "stale-client"},
+        )
+        self.assertEqual(stale_room.status_code, 409)
+        current_room = self.client.get(
+            "/api/internal/collaboration/documents/project-1-pdf1-layout-v8-template-1",
+            headers=service_headers,
+        )
+        self.assertEqual(current_room.status_code, 200, current_room.text)
 
         root = Path(self.temp.name)
         red = root / "red.png"
