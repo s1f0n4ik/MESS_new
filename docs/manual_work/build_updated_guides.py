@@ -149,7 +149,14 @@ def footer(doc: Document, label: str) -> None:
         p._p.append(field)
 
 
-def title_page(doc: Document, kicker: str, title: str, subtitle: str, audience: str) -> None:
+def title_page(
+    doc: Document,
+    kicker: str,
+    title: str,
+    subtitle: str,
+    audience: str,
+    version_date: str = "18 октября 2026",
+) -> None:
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Inches(0.6)
     r = p.add_run(kicker.upper())
@@ -188,7 +195,7 @@ def title_page(doc: Document, kicker: str, title: str, subtitle: str, audience: 
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Inches(3.25)
     p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    r = p.add_run("Версия от 18 октября 2026")
+    r = p.add_run(f"Версия от {version_date}")
     r.font.size = Pt(9)
     r.font.color.rgb = RGBColor.from_string(MUTED)
     doc.add_page_break()
