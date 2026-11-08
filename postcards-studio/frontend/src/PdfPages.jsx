@@ -1,22 +1,51 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { authHeaders } from './api'
 import { STROKE_DASHARRAYS } from './strokeStyles'
 import { pdfTextPreviewStyle } from './textPreview'
+import { alignTemplateText } from './layoutGeometry'
+import { insertBodyText } from './paragraphs'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
 
 const TEMPLATE_WIDTH_PT = 1190.55
 const TEMPLATE_HEIGHT_PT = 841.89
 
-function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
+function TextField({ item, number, pageWidth, onSelect, onChange, onKeyDown, onPaste, bodyOnly }) {
+  const ref = useRef(null)
+  const [overflow, setOverflow] = useState(false)
+  useLayoutEffect(() => {
+    const field = ref.current
+    const check = () => setOverflow(field.scrollHeight > field.clientHeight + 1 || field.scrollWidth > field.clientWidth + 1)
+    check()
+    const observer = new ResizeObserver(check)
+    observer.observe(field)
+    document.fonts?.ready.then(check)
+    return () => observer.disconnect()
+  }, [item.text, item.w, item.h, item.fontSize, item.fontFamily, item.bold, item.italic, pageWidth])
+  return <>
+    <textarea ref={ref} aria-label={item.role === 'body' ? `Основной текст, страница ${number}, поле ${item.cardIndex}` : item.role === 'caption' ? `Атрибуция, поле ${item.cardIndex}` : 'Текст'}
+      title={item.role === 'body' ? 'Нажмите, чтобы ввести или вставить основной текст' : 'Атрибуция'}
+      value={item.text || ''} readOnly={bodyOnly && item.role !== 'body'} placeholder="" onFocus={() => {
+        onSelect(number, item.id)
+      }}
+      onChange={(e) => onChange(number, item.id, { text: item.role === 'body' && !item.text && e.target.value
+        ? `\u2003${e.target.value}` : e.target.value })}
+      onKeyDown={onKeyDown} onPaste={onPaste}
+      style={{ ...pdfTextPreviewStyle(item, pageWidth), overflowY: 'auto' }} />
+    {overflow && <span className="text-overflow" role="status">{number % 2 ? 'Продолжение переносится автоматически на следующий лист.' : 'Текст не помещается в два поля. Сократите текст перед скачиванием PDF.'}</span>}
+  </>
+}
+
+function PdfPage({ pdf, number, items, selected, onSelect, onChange, onBodyPaste, canEditLayout, bodyOnly }) {
   const canvasRef = useRef(null)
   const pageRef = useRef(null)
-  const [ratio, setRatio] = useState(1.414)
+  const [ratio, setRatio] = useState(TEMPLATE_HEIGHT_PT / TEMPLATE_WIDTH_PT)
   const [pageWidth, setPageWidth] = useState(TEMPLATE_WIDTH_PT)
 
   useEffect(() => {
+    if (!pdf) return undefined
     let cancelled = false
     pdf.getPage(number).then((page) => {
       if (cancelled) return
@@ -98,39 +127,42 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
     if (item.role !== 'body') return
     event.preventDefault()
     const target = event.currentTarget
-    const start = target.selectionStart
-    const end = target.selectionEnd
-    const pasted = event.clipboardData.getData('text/plain').replace(/\r\n?/g, '\n')
-    const formatted = pasted.split('\n').map((line) => !line.trim() || line.startsWith('\u2003') ? line : `\u2003${line.trimStart()}`).join('\n')
-    onChange(number, item.id, { text: `${item.text.slice(0, start)}${formatted}${item.text.slice(end)}` })
-    requestAnimationFrame(() => { target.selectionStart = target.selectionEnd = start + formatted.length })
+    const empty = !String(item.text || '').trim()
+    const start = empty ? 0 : target.selectionStart
+    const end = empty ? String(item.text || '').length : target.selectionEnd
+    const value = insertBodyText(empty ? '' : String(item.text || ''), start, end, event.clipboardData.getData('text/plain'))
+    if (onBodyPaste) onBodyPaste(number, item.id, value.text,
+      { replaceWhole: empty || (start === 0 && end === String(item.text || '').length) })
+    else onChange(number, item.id, { text: value.text })
+    requestAnimationFrame(() => { target.selectionStart = target.selectionEnd = value.cursor })
   }
 
   return <section className="pdf-page-wrap">
     <div className="page-label">{number}</div>
     <div className="pdf-page" ref={pageRef} style={{ aspectRatio: `1 / ${ratio}` }} onPointerDown={() => onSelect(number, null)}>
       <canvas ref={canvasRef} />
-      {[...(items || [])].sort((a, b) => (a.type === 'page-background' ? -1 : 0) - (b.type === 'page-background' ? -1 : 0)).map((item) => {
+      {alignTemplateText(items || []).sort((a, b) => (a.type === 'page-background' ? -1 : 0) - (b.type === 'page-background' ? -1 : 0)).map((item) => {
         const active = selected?.page === number && selected?.id === item.id
         const adjustableHorizontal = item.type === 'shape' && ['scan-divider', 'caption-divider'].includes(item.role)
         const adjustableVertical = item.type === 'shape' && item.shape === 'vertical-line' && ['divider', 'outline-vertical'].includes(item.role)
         const adjustableLine = adjustableHorizontal || adjustableVertical
+        const templateText = item.type === 'text' && ['caption', 'body'].includes(item.role)
+        const transformable = canEditLayout && !templateText
         const style = { left: `${item.x * 100}%`, top: `${item.y * 100}%`, width: `${item.w * 100}%`, height: `${item.h * 100}%` }
         const shapeWidth = Math.max(.001, Number(item.w || 0) * TEMPLATE_WIDTH_PT)
         const shapeHeight = Math.max(.001, Number(item.h || 0) * TEMPLATE_HEIGHT_PT)
-        if (item.type === 'page-background' || (item.type === 'shape' && item.locked && !adjustableLine)) style.pointerEvents = 'none'
-        return <div key={item.id} className={`editor-item ${active ? 'selected' : ''} ${item.locked ? 'locked' : ''} ${adjustableHorizontal ? 'adjustable-horizontal' : ''} ${adjustableVertical ? 'adjustable-vertical' : ''} item-${item.type}`} style={style}
+        if (item.type === 'page-background' || (!canEditLayout && item.type !== 'text') || (item.type === 'shape' && item.locked && !adjustableLine)) style.pointerEvents = 'none'
+        return <div key={item.id} data-item-id={item.id} className={`editor-item ${active ? 'selected' : ''} ${item.locked ? 'locked' : ''} ${adjustableHorizontal ? 'adjustable-horizontal' : ''} ${adjustableVertical ? 'adjustable-vertical' : ''} item-${item.type} ${item.role === 'body' ? 'body-field' : ''}`} style={style}
           onPointerDown={(event) => { if (item.locked) { event.stopPropagation(); onSelect(number, item.id) } }}>
-          {item.type === 'text' && <textarea value={item.text} placeholder={item.placeholder || ''} onFocus={() => {
-            onSelect(number, item.id)
-            if (item.role === 'body' && !item.text) onChange(number, item.id, { text: '\u2003' })
-          }}
-            onChange={(e) => onChange(number, item.id, { text: e.target.value })}
+          {item.type === 'text' && <TextField item={item} number={number} pageWidth={pageWidth} onSelect={onSelect} onChange={onChange} bodyOnly={bodyOnly}
             onKeyDown={(e) => startIndentedParagraph(e, item)}
-            onPaste={(e) => pasteFormattedText(e, item)}
-            style={pdfTextPreviewStyle(item, pageWidth)} />}
+            onPaste={(e) => pasteFormattedText(e, item)} />}
           {item.type === 'image' && (item.missing
-            ? <div className="missing-scan" title={`Оборот ${item.scanCode || ''} в архиве не сохранился`} />
+            ? <svg className="missing-scan" viewBox={`0 0 ${shapeWidth} ${shapeHeight}`} preserveAspectRatio="none"
+                title={`Оборот ${item.scanCode || ''} в архиве не сохранился`} aria-label="Скан не сохранился">
+                <rect x="0.25" y="0.25" width={Math.max(0, shapeWidth - .5)} height={Math.max(0, shapeHeight - .5)}
+                  fill="#000000" stroke="#a8a8a8" strokeWidth="0.5" strokeDasharray="6 6" />
+              </svg>
             : item.src
             ? <img src={item.src} draggable="false" style={{ objectFit: item.fit || 'contain' }} />
             : <div className="image-placeholder"><b>Скан {item.scanCode || item.sequence || item.cardIndex || ''}</b><span>Выберите слот и загрузите файл</span></div>)}
@@ -150,31 +182,35 @@ function PdfPage({ pdf, number, items, selected, onSelect, onChange }) {
               '--shape-fill': item.fill || 'transparent', '--shape-stroke': item.stroke || '#111111',
               '--shape-width': `${item.strokeWidth ?? 2}px`, '--shape-style': item.strokeStyle || 'solid',
             }} />}
-          {item.type !== 'page-background' && !item.locked && <div className="drag-surface" onPointerDown={(e) => pointerStart(e, item, 'move')} />}
-          {active && !item.locked && adjustableLine && <>
+          {transformable && item.type !== 'page-background' && !item.locked && <div className="drag-surface" onPointerDown={(e) => pointerStart(e, item, 'move')} />}
+          {canEditLayout && active && !item.locked && adjustableLine && <>
             <button className="line-handle line-handle-start" aria-label="Сократить линию с начала" draggable="false" onDragStart={(e) => e.preventDefault()} onPointerDown={(e) => pointerStart(e, item, 'line-start')} />
             <button className="line-handle line-handle-end" aria-label="Сократить линию с конца" draggable="false" onDragStart={(e) => e.preventDefault()} onPointerDown={(e) => pointerStart(e, item, 'line-end')} />
           </>}
-          {active && item.type !== 'page-background' && !item.locked && !adjustableLine && <button className="resize-handle" aria-label="Изменить размер" onPointerDown={(e) => pointerStart(e, item, 'resize')} />}
+          {transformable && active && item.type !== 'page-background' && !item.locked && !adjustableLine && <button className="resize-handle" aria-label="Изменить размер" onPointerDown={(e) => pointerStart(e, item, 'resize')} />}
         </div>
       })}
     </div>
   </section>
 }
 
-export default function PdfPages({ pages, selected, onSelect, onChange }) {
+export default function PdfPages({ pages, selected, onSelect, onChange, onBodyPaste, canEditLayout = false, bodyOnly = false }) {
   const [pdf, setPdf] = useState(null)
   const [error, setError] = useState('')
+  const pageNumbers = Object.keys(pages).map(Number).filter((number) => number > 0)
+  const structured = pageNumbers.length > 0 && pageNumbers.every((number) =>
+    (pages[number] || []).some((item) => item.type === 'page-background'))
   useEffect(() => {
+    if (structured) { setError(''); return undefined }
     let cancelled = false
     const task = pdfjsLib.getDocument({ url: '/api/template', httpHeaders: authHeaders() })
     task.promise.then((value) => { if (!cancelled) { setError(''); setPdf(value) } })
       .catch((reason) => { if (!cancelled) setError(reason.message) })
     return () => { cancelled = true; task.destroy() }
-  }, [])
+  }, [structured])
   if (error) return <div className="empty-state">Не удалось открыть шаблон: {error}</div>
-  if (!pdf) return <div className="empty-state">Загружаем 28 страниц…</div>
-  return <div className="pages-list">{Array.from({ length: pdf.numPages }, (_, index) =>
-    <PdfPage key={index + 1} pdf={pdf} number={index + 1} items={pages[index + 1] || []}
-      selected={selected} onSelect={onSelect} onChange={onChange} />)}</div>
+  if (!structured && !pdf) return <div className="empty-state">Загружаем 28 страниц…</div>
+  return <div className="pages-list">{Array.from({ length: structured ? Math.max(...pageNumbers) : pdf.numPages }, (_, index) =>
+    <PdfPage key={index + 1} pdf={structured ? null : pdf} number={index + 1} items={pages[index + 1] || []}
+       selected={selected} onSelect={onSelect} onChange={onChange} onBodyPaste={onBodyPaste} canEditLayout={canEditLayout} bodyOnly={bodyOnly} />)}</div>
 }

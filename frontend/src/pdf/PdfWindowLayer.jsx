@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { pdfUrl } from '../net/urls'
 import { usePdfMeta } from './pdfMeta'
 import { PdfDocument } from './PdfDocument'
+import { MediationPanel } from './MediationPanel'
 
 function tabLabel(file, titles) {
   const m = /^pdf(\d+)\.pdf$/i.exec(String(file || ''))
@@ -15,10 +16,12 @@ export function PdfWindowLayer({ state, myRole, serverHost = '' }) {
 
   // Локальный выбор вкладки посетителем. Сервер задаёт только дефолт.
   const [override, setOverride] = useState(null)
+  const [mediationOpen, setMediationOpen] = useState(false)
 
   // Новая волна / новое оседание -> возвращаемся к серверной вкладке.
   useEffect(() => {
     setOverride(null)
+    setMediationOpen(false)
   }, [token])
 
   // mtime файлов — для cache-buster. Ключ обновления — token,
@@ -66,7 +69,7 @@ export function PdfWindowLayer({ state, myRole, serverHost = '' }) {
           {tabs.map((t) => (
             <button
               key={t}
-              onClick={() => setOverride(t)}
+              onClick={() => { if (!mediationOpen) setOverride(t) }} disabled={mediationOpen}
               style={{
                 fontWeight: t === active ? 700 : 400,
                 background: t === active ? '#2d6' : '#444',
@@ -84,8 +87,13 @@ export function PdfWindowLayer({ state, myRole, serverHost = '' }) {
         </div>
       )}
 
+      {active === 'pdf4.pdf' && !mediationOpen && <div className="pdf-editor-bar">
+        <button className="pdf-editor-primary" onClick={() => setMediationOpen(true)}>✎ Изменить</button>
+        <span>Написать или продолжить текст отдельной медиации</span>
+      </div>}
       <div style={{ flex: '1 1 auto', minHeight: 0 }}>
-        {activeUrl ? (
+        {mediationOpen ? <MediationPanel serverHost={serverHost} runKey={String(state?.scenario?.startedAt || 'manual')}
+          releaseId={state?.media?.sync?.installedReleaseId || ''} onClose={() => setMediationOpen(false)} /> : activeUrl ? (
           <PdfDocument key={active} url={activeUrl} resetKey={token} />
         ) : null}
       </div>

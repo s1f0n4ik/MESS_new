@@ -12,7 +12,7 @@ export default function Login({ onLogin }) {
     try {
       const value = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) })
       session.token = value.token
-      onLogin(value.user)
+      await onLogin(value.user)
     } catch (reason) { setError(reason.message) } finally { setBusy(false) }
   }
 

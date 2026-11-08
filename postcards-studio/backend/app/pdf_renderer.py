@@ -3,10 +3,68 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 
 import pymupdf as fitz
+from .layout_geometry import LINE_HEIGHT, align_template_text, body_line_height
+
+
+class TextOverflowError(ValueError):
+    pass
+
+
+def prepare_textbox(page, rect, text, fontname, fontsize, lineheight=LINE_HEIGHT, **kwargs):
+    """Wrap once, and measure complete CSS line boxes at the requested size."""
+    shape = page.new_shape()
+    roomy = fitz.Rect(rect.x0, rect.y0, rect.x1,
+                      rect.y0 + max(rect.height, (len(text) + 2) * fontsize * lineheight))
+    shape.insert_textbox(roomy, text, fontname=fontname, fontsize=fontsize,
+                         lineheight=lineheight, **kwargs)
+    rows = len(re.findall(r'1 0 0 1 [^ ]+ [^ ]+ Tm', shape.text_cont))
+    if text.endswith('\n'):
+        rows += 1
+    return shape, rect.height - rows * fontsize * lineheight
+
+
+def _finish_textbox(shape, font_path, fontsize, justified, lineheight=LINE_HEIGHT):
+    """Use explicit CID glyph advances and absolute baseline spacing.
+
+    PDF word spacing (Tw) is ignored for multibyte Identity-H fonts. PyMuPDF's
+    textbox also multiplies baseline advances by the font ascender, unlike CSS.
+    Keep its wrapping, but encode the intended positions explicitly.
+    """
+    content = shape.text_cont
+    positions = list(re.finditer(r'1 0 0 1 ([^ ]+) ([^ ]+) Tm', content))
+    if positions:
+        font = fitz.Font(fontfile=str(font_path))
+        leading = max(0, (lineheight - (font.ascender - font.descender)) * fontsize / 2)
+        first_y = float(positions[0].group(2)) - leading
+        line = iter(range(len(positions)))
+        content = re.sub(r'1 0 0 1 ([^ ]+) ([^ ]+) Tm',
+            lambda match: f'1 0 0 1 {match.group(1)} {first_y - next(line) * fontsize * lineheight:.6f} Tm', content)
+    if justified:
+        space = f'{fitz.Font(fontfile=str(font_path)).has_glyph(32):04x}'
+
+        def explicit_spacing(match):
+            spacing, attributes, encoded = float(match.group(1)), match.group(2), match.group(3)
+            if spacing <= 0:
+                return match.group(0)
+            chunks, current = [], ''
+            for offset in range(0, len(encoded), 4):
+                glyph = encoded[offset:offset + 4]
+                current += glyph
+                if glyph.lower() == space:
+                    chunks.append(f'<{current}> {-spacing * 1000 / fontsize:.6f}')
+                    current = ''
+            if current:
+                chunks.append(f'<{current}>')
+            return '0 Tw ' + attributes + '[' + ' '.join(chunks) + ']TJ'
+
+        content = re.sub(r'([-+0-9.eE]+) Tw ([^\n]*?)\[<([0-9a-fA-F]+)>\]TJ', explicit_spacing, content)
+    shape.text_cont = content
+    shape.commit(overlay=True)
 
 
 FONT_CANDIDATES = {
@@ -50,6 +108,11 @@ def _font_path(family="Arial", bold=False, italic=False) -> Path | None:
     if explicit and Path(explicit).is_file():
         return Path(explicit)
     variant = "bolditalic" if bold and italic else "bold" if bold else "italic" if italic else "regular"
+    if family == "Times New Roman":
+        name = {"regular": "times.ttf", "bold": "timesbd.ttf", "italic": "timesi.ttf", "bolditalic": "timesbi.ttf"}[variant]
+        bundled = Path(__file__).resolve().parents[1] / "fonts" / name
+        if bundled.is_file():
+            return bundled
     candidates = FONT_CANDIDATES.get(family, FONT_CANDIDATES["Arial"]).get(variant, ())
     return next((path for path in candidates if path.is_file()), None)
 
@@ -69,7 +132,13 @@ def render_document(template: Path, content: dict, assets_root: Path, output: Pa
         raise FileNotFoundError(f"PDF-шаблон не найден: {template}")
     output.parent.mkdir(parents=True, exist_ok=True)
     doc = fitz.open(template)
-    for page_number, raw_items in (content.get("pages") or {}).items():
+    pages = align_template_text(content.get("pages") or {})
+    maximum_page = max((int(number) for number in pages), default=len(doc))
+    if maximum_page > len(doc):
+        width, height = doc[0].rect.width, doc[0].rect.height
+        while len(doc) < maximum_page:
+            doc.new_page(width=width, height=height)
+    for page_number, raw_items in pages.items():
         index = int(page_number) - 1
         if not 0 <= index < len(doc):
             continue
@@ -95,7 +164,8 @@ def render_document(template: Path, content: dict, assets_root: Path, output: Pa
                 page.draw_rect(rect, color=None, fill=_color(item.get("color"), (1, 1, 1)), overlay=True)
             elif kind == "image":
                 if item.get("missing"):
-                    page.draw_rect(rect, color=None, fill=(0, 0, 0), overlay=True)
+                    page.draw_rect(rect, color=_color("#a8a8a8"), fill=(0, 0, 0), width=.5,
+                                   dashes="[6 6] 0", overlay=True)
                     continue
                 source = str(item.get("src") or "")
                 marker = "/assets/"
@@ -118,15 +188,19 @@ def render_document(template: Path, content: dict, assets_root: Path, output: Pa
                 page.insert_font(fontname=variant, fontfile=str(font_path))
                 kwargs.update(fontname=variant)
                 text = str(item.get("text") or "")
-                # PyMuPDF draws nothing when the complete textbox misses the
-                # available height. Linux fallback fonts are slightly wider
-                # than Times New Roman, so find the largest size that fits.
                 if text:
-                    for attempt in range(13):
-                        font_size = max(6, requested_size * (0.96 ** attempt))
-                        spare_height = page.insert_textbox(rect, text, fontsize=font_size, **kwargs)
-                        if spare_height >= 0 or font_size <= 6:
-                            break
+                    shape_kwargs = {key: value for key, value in kwargs.items() if key not in {'overlay', 'fontname'}}
+                    lineheight = body_line_height(requested_size, rect.height) if item.get('role') == 'body' else LINE_HEIGHT
+                    shape, spare_height = prepare_textbox(page, rect, text, variant, requested_size, lineheight=lineheight, **shape_kwargs)
+                    if spare_height < -.0001:
+                        doc.close()
+                        label = 'атрибуция' if item.get('role') == 'caption' else 'основной текст'
+                        hint = ('Сократите атрибуцию или увеличьте её поле в настройках макета.'
+                                if item.get('role') == 'caption' else
+                                'Сократите текст перед скачиванием и публикацией.')
+                        raise TextOverflowError(f"Страница {page_number}, {label}, поле "
+                                                f"{item.get('cardIndex', item['id'])}: текст не помещается. {hint}")
+                    _finish_textbox(shape, font_path, requested_size, align == 3, lineheight=lineheight)
             elif kind == "shape":
                 stroke = _color(item.get("stroke"))
                 fill_value = item.get("fill")
@@ -178,7 +252,13 @@ def publish_release(template: Path, assets_root: Path, releases_root: Path, rele
             files.append({"slot": document["slot"], "name": filename,
                           "size": target.stat().st_size, "sha256": sha256(target),
                           "documentRevision": document["revision"]})
-        manifest = {**manifest_base, "files": files}
+        attachments = []
+        fourth = next((value for value in documents if value['slot'] == 'pdf4'), None)
+        if fourth:
+            editable = staging / 'editable-pdf4.json'
+            editable.write_text(json.dumps({'pages': fourth['pages']}, ensure_ascii=False), 'utf-8')
+            attachments.append({'name': editable.name, 'size': editable.stat().st_size, 'sha256': sha256(editable)})
+        manifest = {**manifest_base, "files": files, "attachments": attachments}
         (staging / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), "utf-8")
         os.replace(staging, final)
         return manifest

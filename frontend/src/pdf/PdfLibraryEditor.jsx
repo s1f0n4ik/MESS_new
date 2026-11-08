@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { apiUrl, pdfUrl } from '../net/urls'
 import { PdfDocument } from './PdfDocument'
 import { PdfEditorToolbar, usePdfEditor } from './PdfEditor'
+import { MediationPanel } from './MediationPanel'
 
 const FILES = [1, 2, 3, 4].map((number) => ({
   file: `pdf${number}.pdf`,
@@ -11,6 +12,7 @@ const FILES = [1, 2, 3, 4].map((number) => ({
 
 export function PdfLibraryEditor({ serverHost, state, updatedBy, onClose }) {
   const [activeFile, setActiveFile] = useState(FILES[0].file)
+  const [mediationOpen, setMediationOpen] = useState(false)
   const [titleOverrides, setTitleOverrides] = useState({})
   const [titleDraft, setTitleDraft] = useState(state?.media?.pdfTitles?.pdf1 || FILES[0].defaultLabel)
   const [titleError, setTitleError] = useState('')
@@ -64,7 +66,7 @@ export function PdfLibraryEditor({ serverHost, state, updatedBy, onClose }) {
     <div className="pdf-library-editor">
       <div className="pdf-library-editor__tabs">
         {FILES.map((item) => (
-          <button key={item.file} disabled={editor.editMode}
+          <button key={item.file} disabled={editor.editMode || mediationOpen}
             className={item.file === activeFile ? 'is-active' : ''}
             onClick={() => selectFile(item)}>
             {titleFor(item)}
@@ -79,14 +81,15 @@ export function PdfLibraryEditor({ serverHost, state, updatedBy, onClose }) {
             {titleSaving ? '…' : 'Сохранить'}
           </button>
         </label>
-        <button onClick={close}>Закрыть</button>
+        <button onClick={close} disabled={mediationOpen}>Закрыть</button>
       </div>
       {titleError && <div className="pdf-editor-error pdf-editor-error--block">Название: {titleError}</div>}
-      <PdfEditorToolbar editor={editor} />
+      {selectedFile.slot === 'pdf4' ? !mediationOpen && <div className="pdf-editor-bar"><button className="pdf-editor-primary" onClick={() => setMediationOpen(true)}>✎ Изменить текст медиации</button></div> : <PdfEditorToolbar editor={editor} />}
       <div className="pdf-library-editor__document">
-        <PdfDocument key={activeFile} url={activeUrl} resetKey={activeFile}
+        {mediationOpen ? <MediationPanel serverHost={serverHost} runKey={String(state?.scenario?.startedAt || 'manual')}
+          releaseId={state?.media?.sync?.installedReleaseId || ''} onClose={() => setMediationOpen(false)} /> : <PdfDocument key={activeFile} url={activeUrl} resetKey={activeFile}
           editor={{ pages: editor.doc.pages, editMode: editor.editMode, selected: editor.selected,
-            assetOrigin: editor.assetOrigin, onSelect: editor.select, onChange: editor.update }} />
+            assetOrigin: editor.assetOrigin, onSelect: editor.select, onChange: editor.update }} />}
       </div>
     </div>
   )

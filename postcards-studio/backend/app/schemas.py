@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -42,9 +42,39 @@ class CollaborationAuthBody(BaseModel):
 
 class CollaborationSnapshotBody(BaseModel):
     pages: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    templateRevision: int | None = None
     updatedBy: str | None = None
     checkpoint: bool = False
 
 
 class SaveTemplateBody(BaseModel):
     pages: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    templateRevision: int | None = None
+
+
+class TextFlowField(BaseModel):
+    w: float = Field(gt=0, le=1, allow_inf_nan=False)
+    h: float = Field(gt=0, le=1, allow_inf_nan=False)
+    fontSize: float = Field(ge=6, le=240, allow_inf_nan=False)
+    fontFamily: Literal['Times New Roman', 'Arial', 'Georgia', 'Courier New']
+    bold: bool = False
+    italic: bool = False
+
+
+class TextFlowBody(BaseModel):
+    page: int = Field(ge=1, le=200)
+    itemId: str = Field(max_length=80)
+    text: str = Field(max_length=60000)
+    templateRevision: int
+    fields: list[TextFlowField] | None = Field(default=None, min_length=2, max_length=2)
+
+
+class MoveSpreadBody(BaseModel):
+    fromSpread: int = Field(ge=1, le=100)
+    toSpread: int = Field(ge=1, le=100)
+    templateRevision: int
+
+
+class AddSpreadBody(BaseModel):
+    afterSpread: int = Field(ge=0, le=100)
+    templateRevision: int

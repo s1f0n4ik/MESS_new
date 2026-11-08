@@ -1,9 +1,10 @@
 import * as Y from 'yjs'
+import { isDeepStrictEqual } from 'node:util'
 
 const primitiveKeys = [
   'id', 'type', 'x', 'y', 'w', 'h', 'fontSize', 'fontFamily', 'color', 'background',
   'align', 'bold', 'italic', 'src', 'fit', 'shape', 'fill', 'stroke', 'strokeWidth', 'strokeStyle',
-  'locked', 'role', 'placeholder', 'sequence', 'cardIndex', 'sourceLabel', 'scanCode', 'missing',
+  'locked', 'role', 'placeholder', 'sequence', 'cardIndex', 'sourceLabel', 'scanCode', 'missing', 'side',
 ]
 
 export function elementFromJson(value) {
@@ -45,4 +46,28 @@ export function pagesToJson(document) {
     if (values.length) result[number] = values
   }
   return result
+}
+
+function layoutOnly(document, bodyOnly = false) {
+  const value = document.toJSON()
+  value.pages = pagesToJson(document)
+  for (const items of Object.values(value.pages)) {
+    for (const item of items) if (item.type === 'text' && (!bodyOnly || item.role === 'body')) delete item.text
+  }
+  return value
+}
+
+export function allowsTextOnlyUpdate(document, update, bodyOnly = false) {
+  const candidate = new Y.Doc()
+  try {
+    Y.applyUpdate(candidate, Y.encodeStateAsUpdate(document))
+    // Register the shared root type before toJSON, including on empty pages.
+    candidate.getMap('pages')
+    const before = layoutOnly(candidate, bodyOnly)
+    Y.applyUpdate(candidate, update)
+    return !candidate.store.pendingStructs && !candidate.store.pendingDs &&
+      isDeepStrictEqual(before, layoutOnly(candidate, bodyOnly))
+  } finally {
+    candidate.destroy()
+  }
 }

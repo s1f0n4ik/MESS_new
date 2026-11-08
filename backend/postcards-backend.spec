@@ -26,9 +26,10 @@ a = Analysis(
     ["serve.py"],
     pathex=["."],
     binaries=[],
-    datas=[
-        ("../frontend/src-tauri/pdfs-default/Postcards_2x2_template_14_blocks.pdf", "pdfs-default"),
-    ],
+    # Большой PDF-шаблон поставляется ресурсом Tauri, а не сжимается внутрь
+    # PyInstaller onefile. Вложенный onefile внутри основного exe повреждался
+    # Windows-бандлером после первых 16 МБ и координатор не мог запуститься.
+    datas=[],
     hiddenimports=hidden,
     hookspath=[],
     runtime_hooks=[],

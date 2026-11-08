@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import * as Y from 'yjs'
-import { pagesToJson, replacePages } from '../src/model.js'
+import { allowsTextOnlyUpdate, pagesToJson, replacePages } from '../src/model.js'
 
 test('round trips structured pages and preserves collaborative text', () => {
   const first = new Y.Doc()
@@ -25,4 +25,41 @@ test('round trips structured pages and preserves collaborative text', () => {
   assert.equal(result[1].role, 'body')
   assert.equal(result[1].placeholder, 'Текст')
   assert.equal(result[2].strokeStyle, 'dashed')
+})
+
+test('mediators can synchronize text but cannot move, add or remove template objects', () => {
+  const server = new Y.Doc()
+  replacePages(server, { 1: [{ id: 'body', type: 'text', x: .1, text: 'До' },
+    { id: 'line', type: 'shape', x: .2, side: 'left' }] })
+  for (const [change, allowed] of [
+    [(client) => client.getMap('pages').get('1').get(0).get('text').insert(2, ' правки'), true],
+    [(client) => client.getMap('pages').get('1').get(1).set('x', .8), false],
+    [(client) => client.getMap('pages').get('1').delete(1, 1), false],
+    [(client) => client.getMap('pages').get('1').push([new Y.Map([['id', 'extra']])]), false],
+  ]) {
+    const client = new Y.Doc()
+    Y.applyUpdate(client, Y.encodeStateAsUpdate(server))
+    const vector = Y.encodeStateVector(server)
+    change(client)
+    assert.equal(allowsTextOnlyUpdate(server, Y.encodeStateAsUpdate(client, vector)), allowed)
+    client.destroy()
+  }
+  assert.equal(pagesToJson(server)['1'][1].x, .2)
+  server.destroy()
+})
+
+test('mediation sessions accept body text but protect captions and geometry even for staff', () => {
+  const server = new Y.Doc()
+  replacePages(server, {1:[{id:'body',type:'text',role:'body',text:'До'},
+    {id:'caption',type:'text',role:'caption',text:'Подпись'},
+    {id:'line',type:'shape',h:.9}]})
+  for (const [index,key,value,allowed] of [[0,'text','После',true],[1,'text','Другая подпись',false],[2,'h',.1,false]]) {
+    const client = new Y.Doc();Y.applyUpdate(client,Y.encodeStateAsUpdate(server))
+    const element=client.getMap('pages').get('1').get(index)
+    if(key==='text'){element.get('text').delete(0,element.get('text').length);element.get('text').insert(0,value)}
+    else element.set(key,value)
+    assert.equal(allowsTextOnlyUpdate(server,Y.encodeStateAsUpdate(client,Y.encodeStateVector(server)),true),allowed)
+    client.destroy()
+  }
+  server.destroy()
 })

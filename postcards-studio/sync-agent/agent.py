@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import tempfile
@@ -65,7 +66,7 @@ class Agent:
             shutil.rmtree(staging)
         staging.mkdir(parents=True)
         try:
-            for item in manifest["files"]:
+            for item in [*manifest["files"], *manifest.get('attachments', [])]:
                 target = staging / item["name"]
                 url = f"{self.server}/api/sync/releases/{quote(release_id)}/{quote(item['name'])}"
                 with self.client.stream("GET", url) as download:
@@ -93,6 +94,42 @@ class Agent:
             shutil.rmtree(staging, ignore_errors=True)
             raise
 
+    def sync_mediations(self) -> int:
+        response = self.client.get(f'{self.server}/api/sync/mediations')
+        if response.status_code == 404: return 0  # older server
+        response.raise_for_status()
+        count = 0
+        for manifest in response.json():
+            project_id = int(manifest['projectId'])
+            version = str(manifest['version'])
+            if project_id <= 0 or not re.fullmatch(r'r\d{10}', version): raise ValueError('Некорректный архив медиации')
+            root = self.destination / 'Медиации' / str(project_id)
+            folder = root / version
+            latest = root / 'latest.json'
+            if latest.is_file() and json.loads(latest.read_text('utf-8')).get('version') == version: continue
+            staging = root / f'.{version}.staging'
+            staging.mkdir(parents=True, exist_ok=True)
+            try:
+                for item in manifest['files']:
+                    name = item['name']
+                    if name not in ('editable.json', 'pdf4.pdf'): raise ValueError('Некорректное имя файла медиации')
+                    target = staging / name
+                    url = f'{self.server}/api/sync/mediations/{project_id}/{version}/{name}'
+                    with self.client.stream('GET', url) as download:
+                        download.raise_for_status()
+                        with target.open('wb') as stream:
+                            for chunk in download.iter_bytes(1024*1024): stream.write(chunk)
+                    if target.stat().st_size != item['size'] or sha256(target) != item['sha256']:
+                        raise RuntimeError('Архив медиации не прошёл проверку')
+                atomic_json(staging / 'manifest.json', manifest)
+                if folder.exists(): shutil.rmtree(staging)
+                else: os.replace(staging, folder)
+                atomic_json(latest, manifest)
+                count += 1
+            finally:
+                if staging.exists(): shutil.rmtree(staging)
+        return count
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Postcards Studio NAS sync agent")
@@ -118,6 +155,7 @@ def main() -> None:
     agent = Agent(args.server, token, args.destination, args.application)
     if args.once:
         agent.sync_once()
+        agent.sync_mediations()
         return
     running = True
 
@@ -131,6 +169,7 @@ def main() -> None:
     while running:
         try:
             agent.sync_once()
+            agent.sync_mediations()
         except Exception as exc:
             print(f"[sync] ошибка: {exc}", flush=True)
         for _ in range(max(1, int(args.interval * 2))):

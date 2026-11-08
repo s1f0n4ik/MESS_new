@@ -75,6 +75,7 @@ export function useCollaboration(projectId, slot, user, templateRevision = 0) {
   const documentRef = useRef(null)
   const [pages, setPages] = useState({})
   const [ready, setReady] = useState(false)
+  const [synced, setSynced] = useState(false)
   const [status, setStatus] = useState('Подключаемся…')
   const [people, setPeople] = useState([])
   const [error, setError] = useState('')
@@ -83,7 +84,7 @@ export function useCollaboration(projectId, slot, user, templateRevision = 0) {
   const undoRef = useRef(null)
 
   useEffect(() => {
-    setReady(false); setStatus('Подключаемся…'); setPeople([]); setError(''); setCanUndo(false); setCanRedo(false)
+    setReady(false); setSynced(false); setStatus('Подключаемся…'); setPeople([]); setError(''); setCanUndo(false); setCanRedo(false)
     const document = new Y.Doc()
     documentRef.current = document
     const undoManager = new Y.UndoManager(document.getMap('pages'), {
@@ -102,14 +103,14 @@ export function useCollaboration(projectId, slot, user, templateRevision = 0) {
     document.on('update', refresh)
     const provider = new HocuspocusProvider({
       url: collaborationUrl(), name: roomName, document, token: session.token, flushDelay: 120,
-      onStatus: ({ status: value }) => setStatus(value === 'connected' ? 'Синхронизация…' : value === 'connecting' ? 'Подключаемся…' : 'Офлайн — изменения сохранятся'),
-      onSynced: () => { refresh(); setReady(true); setStatus('Все изменения сохранены') },
+      onStatus: ({ status: value }) => { if (value !== 'connected') setSynced(false); setStatus(value === 'connected' ? 'Синхронизация…' : value === 'connecting' ? 'Подключаемся…' : 'Офлайн — изменения сохранятся') },
+      onSynced: () => { refresh(); setSynced(true); setReady(true); setStatus('Все изменения сохранены') },
       onUnsyncedChanges: ({ number }) => setStatus(number ? 'Сохраняем…' : 'Все изменения сохранены'),
       onAuthenticationFailed: ({ reason }) => setError(reason || 'Не удалось войти в совместный документ'),
       onAwarenessUpdate: ({ states }) => setPeople(states.map((state) => state.user).filter(Boolean)),
     })
     provider.setAwarenessField('user', { name: user.name, email: user.email, color: colorFor(user.email) })
-    offline.on('synced', () => { refresh(); setReady(true) })
+    offline.on('synced', () => { refresh(); if (document.getMap('pages').size) setReady(true) })
     return () => {
       provider.destroy(); offline.destroy(); document.off('update', refresh); undoManager.destroy(); document.destroy()
       documentRef.current = null
@@ -221,6 +222,15 @@ export function useCollaboration(projectId, slot, user, templateRevision = 0) {
     if (index >= 0) list.delete(index, 1)
   }), [transact])
 
+  const changeTexts = useCallback((fields) => transact((pagesMap) => {
+    for (const field of fields) {
+      const list = pagesMap.get(String(field.page))
+      const element = list?.toArray().find((entry) => entry.get('id') === field.id)
+      const text = element?.get('text')
+      if (text instanceof Y.Text) setText(text, field.text)
+    }
+  }), [transact])
+
   const changeAllText = useCallback((patch) => transact((pagesMap) => {
     for (const list of pagesMap.values()) {
       if (!(list instanceof Y.Array)) continue
@@ -256,7 +266,7 @@ export function useCollaboration(projectId, slot, user, templateRevision = 0) {
   const replace = useCallback((value) => { if (documentRef.current) replacePages(documentRef.current, value, EDITOR_ORIGIN) }, [])
   const snapshot = useCallback(() => documentRef.current ? pagesToJson(documentRef.current) : {}, [])
   return {
-    pages, ready, status, people, error, change, changeLayout, add, remove, resetPage, blankPage,
+    pages, ready, synced, status, people, error, change, changeTexts, changeLayout, add, remove, resetPage, blankPage,
     blankDocument, changeAllText, undo, redo, canUndo, canRedo, replace, snapshot,
   }
 }

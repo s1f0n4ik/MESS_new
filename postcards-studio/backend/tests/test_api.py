@@ -128,8 +128,18 @@ class StudioApiTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(response.content).hexdigest(), item["sha256"])
 
     def test_extended_editor_elements_are_sanitized_and_rendered(self):
-        from app.main import clean_pages
+        from app.main import clean_pages, merge_text_only
         from app.pdf_renderer import render_document
+
+        text_only = merge_text_only(
+            {"1": [{"id": "text", "type": "text", "x": .1, "text": "До"},
+                   {"id": "line", "type": "shape", "x": .2, "strokeWidth": .5}]},
+            {"1": [{"id": "text", "type": "text", "x": .8, "text": "После"},
+                   {"id": "line", "type": "shape", "x": .9, "strokeWidth": 8}]},
+        )
+        self.assertEqual(text_only["1"][0], {"id": "text", "type": "text", "x": .1, "text": "После"})
+        self.assertEqual(text_only["1"][1], {"id": "line", "type": "shape", "x": .2,
+                                               "strokeWidth": .5})
 
         pages = clean_pages({"1": [
             {"id": "background-1", "type": "page-background", "x": 0, "y": 0, "w": 1, "h": 1,
@@ -145,6 +155,9 @@ class StudioApiTests(unittest.TestCase):
             {"id": "thin-vertical", "type": "shape", "x": .49, "y": .05, "w": .004, "h": .9,
              "shape": "vertical-line", "stroke": "#112233", "strokeWidth": .5, "strokeStyle": "illustrator-dashed",
              "role": "outline-vertical", "side": "left", "cardIndex": 1},
+            {"id": "missing-scan", "type": "image", "x": .6, "y": .4, "w": .25, "h": .25,
+             "src": "", "fit": "contain", "missing": True, "role": "scan", "scanCode": "n",
+             "cardIndex": 2},
         ]})
         self.assertEqual(pages["1"][0]["type"], "page-background")
         self.assertEqual(pages["1"][1]["fontFamily"], "Georgia")
@@ -163,7 +176,86 @@ class StudioApiTests(unittest.TestCase):
         self.assertNotIn("ORIGINAL TEMPLATE", rendered[0].get_text())
         self.assertIn("Курсивный текст", rendered[0].get_text().replace("\xa0", " "))
         self.assertFalse(any(font[3] == "Helvetica" for font in rendered[0].get_fonts(full=True)))
+        missing = [drawing for drawing in rendered[0].get_drawings()
+                   if drawing.get("fill") == (0.0, 0.0, 0.0)]
+        self.assertTrue(missing)
+        self.assertEqual(missing[-1]["width"], .5)
+        self.assertTrue(missing[-1]["dashes"])
         rendered.close()
+
+    def test_common_material_recovers_empty_scan_and_copies_caption_but_not_body(self):
+        from app.main import fill_missing_shared_material, merge_global_template, normalize_global_template
+        source = {"1": [
+            {"id": "scan", "type": "image", "role": "scan", "cardIndex": 1, "scanCode": "1", "src": "/assets/1/scan.png"},
+            {"id": "caption", "type": "text", "role": "caption", "cardIndex": 1, "text": "Общая атрибуция"},
+            {"id": "body", "type": "text", "role": "body", "cardIndex": 1, "text": "Экфрасис"},
+        ]}
+        target = json.loads(json.dumps(source))
+        target["1"][0]["src"] = ""
+        target["1"][1]["text"] = "Старая атрибуция"
+        target["1"][2]["text"] = "Формальный анализ"
+        template = normalize_global_template(source)
+        merged = merge_global_template(target, template)
+        self.assertEqual(merged["1"][0]["src"], "/assets/1/scan.png")
+        self.assertEqual(merged["1"][1]["text"], "Общая атрибуция")
+        self.assertEqual(merged["1"][2]["text"], "Формальный анализ")
+        recovered = fill_missing_shared_material(target, [source])
+        self.assertEqual(recovered["1"][0]["src"], "/assets/1/scan.png")
+        self.assertEqual(recovered["1"][2]["text"], "Формальный анализ")
+
+    def test_preview_serves_exact_renderer_fonts(self):
+        response = self.client.get("/api/fonts.css")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Studio Times New Roman", response.text)
+        response = self.client.get("/api/fonts/times/regular")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "font/ttf")
+        self.assertGreater(len(response.content), 10000)
+
+    def test_y_spread_operations_are_admin_only_and_change_all_documents(self):
+        from app.editable_template import blank_editable_layout
+        project = self.client.get("/api/projects/1", headers=self.headers).json()
+        saved_template = self.client.put(
+            "/api/projects/1/documents/pdf1/template", headers=self.headers,
+            json={"pages": blank_editable_layout(), "templateRevision": project["templateRevision"]},
+        )
+        self.assertEqual(saved_template.status_code, 200, saved_template.text)
+        revision = saved_template.json()["templateRevision"]
+        created = self.client.post("/api/users", headers=self.headers, json={
+            "email": "spread-publisher@test.local", "name": "Издатель разворотов",
+            "password": "publisher-password", "role": "publisher",
+        })
+        publisher_login = self.client.post("/api/auth/login", json={
+            "email": "spread-publisher@test.local", "password": "publisher-password",
+        })
+        publisher_headers = {"Authorization": f"Bearer {publisher_login.json()['token']}"}
+        forbidden = self.client.post("/api/projects/1/spreads/move", headers=publisher_headers,
+                                     json={"fromSpread": 13, "toSpread": 14,
+                                           "templateRevision": revision})
+        self.assertEqual(forbidden.status_code, 403)
+        moved = self.client.post("/api/projects/1/spreads/move", headers=self.headers,
+                                 json={"fromSpread": 13, "toSpread": 14,
+                                       "templateRevision": revision})
+        self.assertEqual(moved.status_code, 200, moved.text)
+        self.assertEqual(moved.json()["spreadCount"], 14)
+        for slot in ("pdf1", "pdf2", "pdf3", "pdf4"):
+            pages = self.client.get(f"/api/projects/1/documents/{slot}", headers=self.headers).json()["pages"]
+            self.assertTrue(any(item.get("id") == "scan-25-0" for item in pages["27"]))
+            self.assertFalse(any(item.get("id") == "scan-25-0" for item in pages["25"]))
+        added = self.client.post("/api/projects/1/spreads/add", headers=self.headers,
+                                 json={"afterSpread": 14,
+                                       "templateRevision": moved.json()["templateRevision"]})
+        self.assertEqual(added.status_code, 200, added.text)
+        self.assertEqual(added.json()["spreadCount"], 15)
+        for slot in ("pdf1", "pdf2", "pdf3", "pdf4"):
+            pages = self.client.get(f"/api/projects/1/documents/{slot}", headers=self.headers).json()["pages"]
+            self.assertEqual(set(pages), {str(value) for value in range(1, 31)})
+        exported = self.client.get("/api/projects/1/documents/pdf1/export.pdf", headers=self.headers)
+        self.assertEqual(exported.status_code, 200, exported.text)
+        rendered = fitz.open(stream=exported.content, filetype="pdf")
+        self.assertEqual(len(rendered), 30)
+        rendered.close()
+        self.client.delete(f"/api/users/{created.json()['id']}", headers=self.headers)
 
     def test_collaboration_history_is_throttled_and_document_can_be_exported(self):
         first_pages = {"1": [{"id": "first", "type": "text", "x": .1, "y": .1,
@@ -205,6 +297,8 @@ class StudioApiTests(unittest.TestCase):
              "text": "Редактируемое поле", "fontSize": 18, "fontFamily": "Times New Roman",
              "color": "#111111", "background": "transparent", "align": "left",
              "locked": True, "role": "body", "cardIndex": 1},
+            {"id": "caption-1-0", "type": "text", "x": .05, "y": .32, "w": .4, "h": .06,
+             "text": "Общая атрибуция скана", "fontSize": 16, "role": "caption", "cardIndex": 1},
         ]}
         other_pages = {"1": [{**template_pages["1"][0]},
                               {**template_pages["1"][1]},
@@ -212,6 +306,18 @@ class StudioApiTests(unittest.TestCase):
         other_saved = self.client.post("/api/projects/1/documents/pdf2/collaboration-snapshot",
                                        headers=self.headers, json={"pages": other_pages})
         self.assertEqual(other_saved.status_code, 200, other_saved.text)
+        publisher = self.client.post("/api/users", headers=self.headers, json={
+            "email": "publisher@test.local", "name": "Издатель", "password": "publisher-password",
+            "role": "publisher",
+        })
+        self.assertEqual(publisher.status_code, 200, publisher.text)
+        publisher_login = self.client.post("/api/auth/login", json={
+            "email": "publisher@test.local", "password": "publisher-password",
+        })
+        publisher_headers = {"Authorization": f"Bearer {publisher_login.json()['token']}"}
+        forbidden_template = self.client.put("/api/projects/1/documents/pdf1/template",
+                                             headers=publisher_headers, json={"pages": template_pages})
+        self.assertEqual(forbidden_template.status_code, 403)
         saved = self.client.put("/api/projects/1/documents/pdf1/template", headers=self.headers,
                                 json={"pages": template_pages})
         self.assertEqual(saved.status_code, 200, saved.text)
@@ -224,7 +330,14 @@ class StudioApiTests(unittest.TestCase):
         loaded_other = self.client.get("/api/projects/1/documents/pdf2/template", headers=self.headers)
         self.assertEqual(loaded_other.status_code, 200, loaded_other.text)
         self.assertEqual(loaded_other.json()["pages"]["1"][2]["text"], "Текст второго документа")
+        self.assertEqual(loaded_other.json()["pages"]["1"][3]["text"], "Общая атрибуция скана")
         self.assertEqual(self.client.get("/api/projects/1", headers=self.headers).json()["templateRevision"], 1)
+        stale_browser = self.client.post("/api/projects/1/documents/pdf1/collaboration-snapshot",
+                                         headers=self.headers, json={"pages": other_pages, "templateRevision": 0})
+        self.assertEqual(stale_browser.status_code, 409)
+        stale_template = self.client.put("/api/projects/1/documents/pdf1/template", headers=self.headers,
+                                         json={"pages": other_pages, "templateRevision": 0})
+        self.assertEqual(stale_template.status_code, 409)
         service_headers = {"X-Collaboration-Secret": "development-collaboration-secret"}
         stale_room = self.client.post(
             "/api/internal/collaboration/documents/project-1-pdf1-layout-v8-template-0",
@@ -236,6 +349,8 @@ class StudioApiTests(unittest.TestCase):
             headers=service_headers,
         )
         self.assertEqual(current_room.status_code, 200, current_room.text)
+        deleted_publisher = self.client.delete(f"/api/users/{publisher.json()['id']}", headers=self.headers)
+        self.assertEqual(deleted_publisher.status_code, 200)
 
         root = Path(self.temp.name)
         red = root / "red.png"
@@ -265,6 +380,98 @@ class StudioApiTests(unittest.TestCase):
         self.assertEqual(imported.json()["count"], 2)
         self.assertEqual([item["label"] for item in imported.json()["assets"]], ["Первый", "Второй"])
         self.assertEqual([item["number"] for item in imported.json()["assets"]], [1, 2])
+
+
+    def test_z_text_flow_uses_current_displayed_layout_and_keeps_columns_independent(self):
+        from app.editable_template import blank_editable_layout
+        pages = blank_editable_layout()
+        display = [next(i for i in pages[str(p)] if i.get('role')=='body' and i['cardIndex']==1)
+                   for p in (1,2)]
+        boxes = [{key:i.get(key, False) for key in ('w','h','fontSize','fontFamily','bold','italic')} for i in display]
+        for values in pages.values():
+            for item in values:
+                if item.get('role')=='body': item['fontSize']=72
+        current = self.client.get('/api/projects/1/documents/pdf3',headers=self.headers).json()
+        saved = self.client.put('/api/projects/1/documents/pdf3',headers=self.headers,
+                                json={'baseRevision':current['revision'],'pages':pages})
+        self.assertEqual(saved.status_code,200,saved.text)
+        project = self.client.get('/api/projects/1',headers=self.headers).json()
+        text = ('На открытке изображены люди и лошади. '*130)[:4200]
+        base = {'page':1,'itemId':'body-1-0','text':text,'templateRevision':project['templateRevision']}
+        stale = self.client.post('/api/projects/1/documents/pdf3/text-flow',headers=self.headers,json=base)
+        self.assertTrue(stale.json()['overflow'])
+        actual = self.client.post('/api/projects/1/documents/pdf3/text-flow',headers=self.headers,json={**base,'fields':boxes})
+        self.assertEqual(actual.status_code,200,actual.text)
+        self.assertFalse(actual.json()['overflow'])
+        right = self.client.post('/api/projects/1/documents/pdf3/text-flow',headers=self.headers,
+                                 json={**base,'itemId':'body-1-1','fields':boxes})
+        self.assertEqual([i['text'] for i in actual.json()['fields']],[i['text'] for i in right.json()['fields']])
+        self.assertNotEqual(actual.json()['fields'][0]['id'],right.json()['fields'][0]['id'])
+        self.assertEqual(''.join(i['text'] for i in actual.json()['fields']),text)
+        unchanged = self.client.get('/api/projects/1/documents/pdf3',headers=self.headers).json()
+        self.assertEqual(unchanged['revision'],saved.json()['revision'])
+
+
+    def test_zz_mediation_accounts_are_isolated_and_archive_keeps_editable_text(self):
+        from unittest.mock import patch
+        from app.editable_template import blank_editable_layout
+        from app import main
+        current = self.client.get('/api/projects/1/documents/pdf4', headers=self.headers).json()
+        saved = self.client.put('/api/projects/1/documents/pdf4', headers=self.headers,
+            json={'baseRevision':current['revision'],'pages':blank_editable_layout()})
+        self.assertEqual(saved.status_code,200,saved.text)
+        created = self.client.post('/api/mediations',headers=self.headers,json={'title':'Медиация А'})
+        self.assertEqual(created.status_code,200,created.text)
+        first = created.json()
+        second = self.client.post('/api/mediations',headers=self.headers,json={'title':'Медиация Б'}).json()
+        self.assertNotEqual(first['projectId'],second['projectId'])
+        logged = self.client.post('/api/auth/login',json={'email':first['login'],'password':first['password']})
+        self.assertEqual(logged.status_code,200,logged.text)
+        guest={'Authorization':'Bearer '+logged.json()['token']}
+        pid=first['projectId']
+        self.assertEqual([p['id'] for p in self.client.get('/api/projects',headers=guest).json()],[pid])
+        for other in (1,second['projectId']):
+            self.assertEqual(self.client.get(f'/api/projects/{other}/documents/pdf4',headers=guest).status_code,403)
+        self.assertEqual(self.client.get('/api/users',headers=guest).status_code,403)
+        self.assertEqual(self.client.post('/api/mediations',headers=guest,json={'title':'чужая'}).status_code,403)
+        auth=self.client.post('/api/internal/collaboration/auth',headers={'X-Collaboration-Secret':main.cfg.collaboration_secret},
+            json={'token':logged.json()['token'],'documentName':f'project-{second["projectId"]}-pdf4-layout-v8-template-1'})
+        self.assertEqual(auth.status_code,403)
+        doc=self.client.get(f'/api/projects/{pid}/documents/pdf4',headers=guest).json()
+        original=json.loads(json.dumps(doc['pages']))
+        for item in doc['pages']['1']:
+            if item.get('role')=='body': item['text']='Текст гостей медиации.'
+            if item.get('role')=='caption': item['text']='Нельзя изменять подпись'
+            if item.get('role')=='outline': item['h']=.1
+        updated=self.client.put(f'/api/projects/{pid}/documents/pdf4',headers=guest,
+            json={'baseRevision':doc['revision'],'pages':doc['pages']})
+        self.assertEqual(updated.status_code,200,updated.text)
+        for before,after in zip(original['1'],updated.json()['pages']['1']):
+            if before.get('role')!='body': self.assertEqual(before,after)
+        common=self.client.get('/api/projects/1/documents/pdf4',headers=self.headers).json()
+        self.assertEqual(common['pages'],saved.json()['pages'])
+        with patch.object(main.cfg,'yandex_disk_path',''):
+            archived=self.client.post(f'/api/mediations/{pid}/archive',headers=guest)
+        self.assertEqual(archived.status_code,200,archived.text)
+        manifest=archived.json()
+        self.assertEqual({i['name'] for i in manifest['files']},{'editable.json','pdf4.pdf'})
+        downloaded=self.client.get(f'/api/sync/mediations/{pid}/{manifest["version"]}/editable.json',
+                                    headers={'X-Sync-Token':'sync-test-token'})
+        self.assertEqual(downloaded.status_code,200)
+        self.assertIn('Текст гостей медиации.',downloaded.text)
+        self.assertNotIn(first['password'],downloaded.text)
+        self.assertEqual(self.client.get('/api/sync/mediations',headers=guest).status_code,401)
+        self.assertEqual(self.client.post(f'/api/mediations/{pid}/promotion',headers=guest).status_code,403)
+        proposal=self.client.post(f'/api/mediations/{pid}/promotion',headers=self.headers)
+        self.assertEqual(proposal.status_code,200,proposal.text)
+        self.assertTrue(any(f['text']=='Текст гостей медиации.' for f in proposal.json()['fields']))
+        # A failed NAS delivery must not discard the editable server archive.
+        with patch.object(main.cfg,'yandex_disk_path','/test'),patch.object(main.cfg,'yandex_disk_oauth_token','fake'),\
+             patch('app.mediations.YandexDiskApiDelivery.upload_mediation',side_effect=RuntimeError('offline')):
+            failed=self.client.post(f'/api/mediations/{pid}/archive',headers=guest)
+        self.assertEqual(failed.status_code,200)
+        self.assertEqual(failed.json()['deliveryStatus'],'retry-needed')
+        self.assertTrue(downloaded.content)
 
 
 if __name__ == "__main__":

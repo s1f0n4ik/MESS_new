@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import shutil
 import time
 import socket
@@ -35,7 +36,7 @@ import scenario_log
 # ---------------------------------------------------------------------------
 ROLES = ["pc1", "pc2", "pc3", "pc4"]
 CLICK_THRESHOLD = 17
-BUILD_NAME = "2026-10-13-document-tabs-v9"
+BUILD_NAME = "2026-10-28-host-sidecar-v11"
 PDF_TEMPLATE_NAME = "Postcards_2x2_template_14_blocks.pdf"
 
 
@@ -51,10 +52,21 @@ def build_info():
 BUILD_INFO = build_info()
 
 def bundled_pdf_template() -> Path:
+    # В установленном приложении шаблон лежит рядом с sidecar-бэкендом как
+    # отдельный ресурс Tauri. Переменная нужна для будущих платформ, где
+    # resource_dir не обязан совпадать с каталогом exe.
+    configured = os.environ.get("POSTCARDS_PDF_TEMPLATE")
+    if configured:
+        bundled = Path(configured)
+        if bundled.is_file():
+            return bundled
     root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
     bundled = root / "pdfs-default" / PDF_TEMPLATE_NAME
-    if bundled.is_file() or getattr(sys, "frozen", False):
+    if bundled.is_file():
         return bundled
+    sibling = Path(sys.executable).parent / "pdfs-default" / PDF_TEMPLATE_NAME
+    if sibling.is_file():
+        return sibling
     return Path(__file__).resolve().parent.parent / "frontend" / "src-tauri" / "pdfs-default" / PDF_TEMPLATE_NAME
 
 
@@ -1129,6 +1141,8 @@ mount_static(app, media)                    # /audio/* — настраивае�
 pdf_editor = PdfEditorStore(DATA_DIR, on_change=_media_changed)
 app.include_router(create_pdf_editor_router(pdf_editor))
 mount_pdf_editor_static(app, pdf_editor)
+from mediation_bridge import create_router as create_mediation_router
+app.include_router(create_mediation_router(DATA_DIR))
 
 # ---------------------------------------------------------------------------
 # HTTP

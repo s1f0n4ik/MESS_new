@@ -4,6 +4,8 @@ import { useCollaboration } from './collaboration'
 import PdfPages from './PdfPages'
 import UserDialog from './UserDialog'
 import { STROKE_STYLE_OPTIONS } from './strokeStyles'
+import { alignTemplateText, DEFAULT_FONT_SIZE, CAPTION_DIVIDER_Y } from './layoutGeometry'
+import { useAutomaticTextFlow } from './useAutomaticTextFlow'
 
 const newId = () => `e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
 const FONT_OPTIONS = [['Times New Roman', 'Times New Roman'], ['Arial', 'Arial'], ['Georgia', 'Georgia'], ['Courier New', 'Courier New']]
@@ -14,7 +16,7 @@ const SPREAD_SCANS = [
   [[null, '4.21'], [12, '4.2']], [[5, '5'], [13, '5.1']],
   [[6, '6'], [null, '6.1']], [[19, '6.21'], [14, '6.2']],
   [[7, '7'], [null, '7.1']], [[20, '7.21'], [15, '7.2']],
-  [[8, '8'], [null, '8.1']], [[21, '8.21'], [16, '8.2']],
+  [[21, '8.21'], [16, '8.2']], [[8, '8'], [null, '8.1']],
 ]
 
 function editableLayout(pageCount = 28) {
@@ -43,25 +45,27 @@ function editableLayout(pageCount = 28) {
         { id: `scan-divider-${page}-${column}`, type: 'shape', shape: 'line', x, y: .40104, w: .464287, h: .006,
           fill: 'transparent', stroke: '#231f20', strokeWidth: .5, strokeStyle: 'illustrator-dashed', locked: true, role: 'scan-divider', cardIndex },
         { id: `caption-${page}-${column}`, type: 'text', x: x + .005, y: .393, w: .462, h: .078, text: '',
-          placeholder: '', fontSize: 16, fontFamily: 'Times New Roman', color: '#111111',
+          placeholder: '', fontSize: DEFAULT_FONT_SIZE, fontFamily: 'Times New Roman', color: '#111111',
           background: 'transparent', align: 'right', bold: false, italic: false, locked: true, role: 'caption', cardIndex },
-        { id: `caption-divider-${page}-${column}`, type: 'shape', shape: 'line', x, y: .473, w: .464287, h: .006,
+        { id: `caption-divider-${page}-${column}`, type: 'shape', shape: 'line', x, y: CAPTION_DIVIDER_Y, w: .464287, h: .006,
           fill: 'transparent', stroke: '#231f20', strokeWidth: .5, strokeStyle: 'illustrator-dashed', locked: true, role: 'caption-divider', cardIndex },
         { id: `body-${page}-${column}`, type: 'text', x: x + .005, y: .489, w: .462, h: .473, text: '',
-          placeholder: '', fontSize: 15, fontFamily: 'Times New Roman', color: '#111111',
-          background: 'transparent', align: 'left', bold: false, italic: false, locked: true, role: 'body', cardIndex },
+          placeholder: '', fontSize: DEFAULT_FONT_SIZE, fontFamily: 'Times New Roman', color: '#111111',
+          background: 'transparent', align: 'justify', bold: false, italic: false, locked: true, role: 'body', cardIndex },
       )
       else items.push({ id: `body-${page}-${column}`, type: 'text', x: x + .005, y: .025, w: .462, h: .935, text: '',
-        placeholder: '', fontSize: 15, fontFamily: 'Times New Roman', color: '#111111',
-        background: 'transparent', align: 'left', bold: false, italic: false, locked: true, role: 'body', cardIndex })
+        placeholder: '', fontSize: DEFAULT_FONT_SIZE, fontFamily: 'Times New Roman', color: '#111111',
+        background: 'transparent', align: 'justify', bold: false, italic: false, locked: true, role: 'body', cardIndex })
     }
-    pages[page] = items
+    pages[page] = alignTemplateText(items)
   }
   return pages
 }
 
 export default function Editor({ project, user, onLogout }) {
-  const [slot, setSlot] = useState('pdf1')
+  const isMediation = Boolean(project.mediation)
+  const promotionId = new URLSearchParams(window.location.search).get('promoteMediation')
+  const [slot, setSlot] = useState(promotionId ? 'pdf4' : project.documents[0]?.slot || 'pdf1')
   const [documents, setDocuments] = useState(project.documents)
   const [selected, setSelected] = useState(null)
   const [activePage, setActivePage] = useState(1)
@@ -73,20 +77,37 @@ export default function Editor({ project, user, onLogout }) {
   const [usersOpen, setUsersOpen] = useState(false)
   const [notice, setNotice] = useState('')
   const [templateSaving, setTemplateSaving] = useState(false)
+  const [spreadSaving, setSpreadSaving] = useState(false)
+  const [layoutEditing, setLayoutEditing] = useState(false)
   const [revision, setRevision] = useState(project.documents.find((value) => value.slot === slot)?.revision || 0)
   const [templateRevision, setTemplateRevision] = useState(project.templateRevision || 0)
+  const [archiving, setArchiving] = useState(false)
+  const promotionStarted = useRef(false)
   const fileRef = useRef(null)
   const replaceImageRef = useRef(null)
   const docxRef = useRef(null)
   const collaboration = useCollaboration(project.id, slot, user, templateRevision)
+  const automaticFlow = useAutomaticTextFlow(project.id, slot, templateRevision, collaboration)
+  const canEditLayout = !isMediation && user.role === 'admin' && layoutEditing
+
+  useEffect(() => {
+    if (!isMediation) return
+    window.parent.postMessage({ type: 'postcards:mediation', projectId: project.id, title: project.name }, '*')
+  }, [isMediation, project.id, project.name])
+  useEffect(() => {
+    if (isMediation) window.parent.postMessage({ type: 'postcards:mediation-state',
+      busy: archiving || automaticFlow.pending > 0 || !collaboration.synced || collaboration.status !== 'Все изменения сохранены' }, '*')
+  }, [isMediation, archiving, automaticFlow.pending, collaboration.synced, collaboration.status])
 
   useEffect(() => {
     setDocuments(project.documents)
   }, [project.documents])
 
   useEffect(() => {
-    setSelected(null); setError(''); setRevision(documents.find((value) => value.slot === slot)?.revision || 0)
+    setRevision(documents.find((value) => value.slot === slot)?.revision || 0)
   }, [documents, slot])
+
+  useEffect(() => { setSelected(null); setError('') }, [slot])
 
   useEffect(() => {
     const socket = new WebSocket(websocketUrl(project.id))
@@ -111,7 +132,17 @@ export default function Editor({ project, user, onLogout }) {
   }, [project.id, slot])
 
   const select = (page, id) => { setActivePage(page); setSelected(id ? { page, id } : null) }
-  const change = (page, id, patch) => collaboration.changeLayout(page, id, patch)
+  const change = (page, id, patch) => {
+    const target = (collaboration.pages?.[page] || []).find((value) => value.id === id)
+    if (isMediation && target?.role !== 'body') return
+    if (!canEditLayout) {
+      if (target?.type === 'text' && Object.keys(patch).every((key) => key === 'text')) {
+        collaboration.change(page, id, patch)
+      }
+      return
+    }
+    collaboration.changeLayout(page, id, patch)
+  }
   const add = (type, extra = {}) => {
     const item = {
       id: newId(), type, x: .1, y: .1, w: type === 'text' ? .48 : .3, h: type === 'text' ? .13 : .25,
@@ -123,17 +154,21 @@ export default function Editor({ project, user, onLogout }) {
     collaboration.add(activePage, item); setSelected({ page: activePage, id: item.id })
   }
   const remove = () => {
-    if (!selected || item?.locked) return
+    if (!canEditLayout || !selected || item?.locked) return
     collaboration.remove(selected.page, selected.id); setSelected(null)
   }
   const item = selected ? (collaboration.pages?.[selected.page] || []).find((value) => value.id === selected.id) : null
   const adjustableHorizontal = item?.type === 'shape' && ['scan-divider', 'caption-divider'].includes(item.role)
   const adjustableVertical = item?.type === 'shape' && item.shape === 'vertical-line' && ['divider', 'outline-vertical'].includes(item.role)
   const adjustableLine = adjustableHorizontal || adjustableVertical
+  const templateText = item?.type === 'text' && ['caption', 'body'].includes(item.role)
   const pageBackground = (collaboration.pages?.[activePage] || []).find((value) => value.type === 'page-background')
+  const pageCount = Math.max(0, ...Object.keys(collaboration.pages || {}).map(Number).filter(Number.isFinite))
+  const spreadCount = Math.ceil(pageCount / 2)
+  const activeSpread = Math.ceil(activePage / 2)
 
   const duplicate = () => {
-    if (!item || item.locked) return
+    if (!canEditLayout || !item || item.locked) return
     const copy = { ...item, id: newId(), x: Math.min(Math.max(0, 1 - item.w), item.x + .025), y: Math.min(Math.max(0, 1 - item.h), item.y + .025) }
     collaboration.add(selected.page, copy); setSelected({ page: selected.page, id: copy.id })
   }
@@ -150,7 +185,7 @@ export default function Editor({ project, user, onLogout }) {
         event.preventDefault(); collaboration.redo()
       } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd' && item && !item.locked) {
         event.preventDefault(); duplicate()
-      } else if (item && !item.locked && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+      } else if (canEditLayout && item && !item.locked && !templateText && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
         if (adjustableHorizontal && !['ArrowUp', 'ArrowDown'].includes(event.key)) return
         if (adjustableVertical && !['ArrowLeft', 'ArrowRight'].includes(event.key)) return
         event.preventDefault()
@@ -208,17 +243,17 @@ export default function Editor({ project, user, onLogout }) {
   }
 
   const saveTemplate = async ({ confirm = true, lineLocked = false } = {}) => {
-    if (confirm && !window.confirm('Сохранить текущую вёрстку как общий шаблон? Геометрия и стили будут применены ко всем 28 страницам и всем 4 документам; тексты и изображения сохранятся.')) return
+    if (confirm && !window.confirm('Сохранить общий шаблон для 4 документов? Вёрстка, сканы и атрибуции станут общими; основные тексты каждого документа сохранятся.')) return
     setTemplateSaving(true); setError('')
     try {
       const value = await api(`/api/projects/${project.id}/documents/${slot}/template`, {
-        method: 'PUT', body: JSON.stringify({ pages: collaboration.snapshot() }),
+        method: 'PUT', body: JSON.stringify({ pages: collaboration.snapshot(), templateRevision }),
       })
       if (value.pages) collaboration.replace(value.pages)
       setTemplateRevision(value.templateRevision)
       setNotice(lineLocked
         ? 'Линия зафиксирована и синхронизирована на всех разворотах и во всех 4 документах.'
-        : 'Общий шаблон сохранён и применён ко всем 4 документам. Тексты и изображения сохранены.')
+        : 'Шаблон, сканы и атрибуции сохранены для всех 4 документов. Основные тексты сохранены.')
     } catch (reason) { setError(reason.message) }
     finally { setTemplateSaving(false) }
   }
@@ -231,12 +266,37 @@ export default function Editor({ project, user, onLogout }) {
   }
 
   const applyTemplate = async () => {
-    if (!window.confirm('Вернуть геометрию общего шаблона? Тексты и изображения не изменятся.')) return
+    if (!window.confirm('Вернуть общий шаблон, сканы и атрибуции? Основные тексты документа сохранятся.')) return
     try {
       const value = await api(`/api/projects/${project.id}/documents/${slot}/template`)
       collaboration.replace(value.pages); setSelected(null); setNotice('Общий шаблон применён, содержимое сохранено')
     } catch (reason) { setError(reason.message) }
   }
+
+  const mutateSpread = async (action, payload, message) => {
+    if (spreadSaving || !collaboration.ready || automaticFlow.pending > 0) return
+    if (!window.confirm(message)) return
+    setSpreadSaving(true); setError('')
+    try {
+      await api(`/api/projects/${project.id}/documents/${slot}/collaboration-snapshot`, {
+        method: 'POST', body: JSON.stringify({ pages: collaboration.snapshot(), checkpoint: true, templateRevision }),
+      })
+      await api(`/api/projects/${project.id}/spreads/${action}`, {
+        method: 'POST', body: JSON.stringify({ ...payload, templateRevision }),
+      })
+      window.location.reload()
+    } catch (reason) { setError(reason.message); setSpreadSaving(false) }
+  }
+
+  const moveActiveSpread = (offset) => {
+    const target = activeSpread + offset
+    if (target < 1 || target > spreadCount) return
+    mutateSpread('move', { fromSpread: activeSpread, toSpread: target },
+      `Переместить разворот ${activeSpread} на позицию ${target} сразу во всех четырёх документах? Оба листа, сканы, атрибуции и основной текст будут перенесены единым блоком.`)
+  }
+
+  const addSpread = () => mutateSpread('add', { afterSpread: activeSpread },
+    `Добавить пустой двухстраничный разворот после разворота ${activeSpread} сразу во все четыре документа и общий шаблон?`)
 
   const blankPage = () => {
     if (!window.confirm(`Очистить страницу ${activePage} и скрыть исходный PDF-фон?`)) return
@@ -255,7 +315,7 @@ export default function Editor({ project, user, onLogout }) {
     setPublishing(true); setError('')
     try {
       const saved = await api(`/api/projects/${project.id}/documents/${slot}/collaboration-snapshot`, {
-        method: 'POST', body: JSON.stringify({ pages: collaboration.snapshot(), checkpoint: true }),
+        method: 'POST', body: JSON.stringify({ pages: collaboration.snapshot(), checkpoint: true, templateRevision }),
       })
       setRevision(saved.revision)
       const value = await api(`/api/projects/${project.id}/publish`, { method: 'POST' })
@@ -267,7 +327,7 @@ export default function Editor({ project, user, onLogout }) {
     setExporting(true); setError('')
     try {
       const saved = await api(`/api/projects/${project.id}/documents/${slot}/collaboration-snapshot`, {
-        method: 'POST', body: JSON.stringify({ pages: collaboration.snapshot(), checkpoint: true }),
+        method: 'POST', body: JSON.stringify({ pages: collaboration.snapshot(), checkpoint: true, templateRevision }),
       })
       setRevision(saved.revision)
       const title = documents.find((value) => value.slot === slot)?.title || slot
@@ -275,6 +335,60 @@ export default function Editor({ project, user, onLogout }) {
       await downloadFile(`/api/projects/${project.id}/documents/${slot}/export.pdf`, `${safeTitle}.pdf`)
     } catch (reason) { setError(reason.message) } finally { setExporting(false) }
   }
+
+  const flushMediation = async () => api(`/api/projects/${project.id}/documents/pdf4/collaboration-snapshot`, {
+    method: 'POST', body: JSON.stringify({ pages: collaboration.snapshot(), checkpoint: true, templateRevision }),
+  })
+  const archiveMediation = async () => {
+    if (!isMediation || !collaboration.synced || automaticFlow.pending || archiving) return
+    setArchiving(true); setError('')
+    try {
+      const saved = await flushMediation(); setRevision(saved.revision)
+      const value = await api(`/api/mediations/${project.id}/archive`, { method: 'POST' })
+      setNotice(value.deliveryError || (value.deliveryStatus === 'nas-sent' ? 'Редактируемая версия и PDF отправлены на NAS.' : 'Архив сохранён на сервере. Агент синхронизации может скачать его на NAS.'))
+      if (value.pdfError) setError(value.pdfError + ' Редактируемый исходник сохранён полностью.')
+      window.parent.postMessage({ type: 'postcards:archived', ok: value.deliveryStatus !== 'retry-needed' && !value.pdfError, result: value }, '*')
+    } catch (e) {
+      setError(e.message)
+      window.parent.postMessage({ type: 'postcards:archived', ok: false, error: e.message }, '*')
+    } finally { setArchiving(false) }
+  }
+  useEffect(() => {
+    if (!isMediation) return
+    const receive = event => {
+      if (event.source === window.parent && event.data?.type === 'postcards:archive') archiveMediation()
+    }
+    window.addEventListener('message', receive)
+    return () => window.removeEventListener('message', receive)
+  })
+  const promoteMediation = async () => {
+    if (!window.confirm('Перенести тексты этой медиации в общий документ 4? Текущая общая версия останется в истории. Публикация выполняется отдельно после проверки.')) return
+    setError('')
+    try { await flushMediation(); window.location.assign(`/?promoteMediation=${project.id}`) }
+    catch (e) { setError(e.message) }
+  }
+  useEffect(() => {
+    if (!promotionId || isMediation || user.role !== 'admin' || !collaboration.synced || slot !== 'pdf4' || promotionStarted.current) return
+    promotionStarted.current = true
+    ;(async () => {
+      try {
+        await api(`/api/projects/${project.id}/documents/pdf4/collaboration-snapshot`, { method: 'POST',
+          body: JSON.stringify({ pages: collaboration.snapshot(), checkpoint: true, templateRevision }) })
+          const value = await api(`/api/mediations/${Number(promotionId)}/promotion`, { method: 'POST' })
+          if (value.sourceProjectId !== project.id) throw new Error('Медиация относится к другому проекту')
+          const current = collaboration.snapshot()
+          if (value.fields.some(field => !(current[field.page] || []).some(item => item.id === field.id && item.role === 'body'))) {
+            throw new Error('Состав полей общего документа изменился. Обновите страницу перед переносом.')
+          }
+        collaboration.changeTexts(value.fields)
+        const saved = await api(`/api/projects/${project.id}/documents/pdf4/collaboration-snapshot`, { method: 'POST',
+          body: JSON.stringify({ pages: collaboration.snapshot(), checkpoint: true, templateRevision }) })
+        setRevision(saved.revision)
+        setNotice('Тексты медиации перенесены в документ 4. Проверьте их, затем нажмите «Опубликовать 4 PDF».')
+        window.history.replaceState(null, '', '/')
+      } catch (e) { setError(e.message) }
+    })()
+  }, [promotionId, isMediation, user.role, collaboration.synced, slot])
 
   const renameDocument = async (entry) => {
     const value = window.prompt('Новое название документа', entry.title)
@@ -307,7 +421,7 @@ export default function Editor({ project, user, onLogout }) {
   return <div className="app-shell">
     <header className="topbar"><div><b>Postcards Studio</b><span>{project.name}</span></div><div>
       <div className="presence" title={people.map((person) => person.name).join(', ')}>{people.map((person) => <i key={person.email} style={{ background: person.color }}>{person.name?.[0] || '?'}</i>)}<span>{people.length} в документе</span></div>
-      <span>{user.name} · {user.role}</span>{user.role === 'admin' && <button onClick={() => setUsersOpen(true)}>Медиаторы</button>}<button onClick={onLogout}>Выйти</button>
+      <span>{user.name} · {user.role === 'mediation' ? 'участник медиации' : user.role}</span><a href="/?mediation=list">Медиации</a>{!isMediation && user.role === 'admin' && <button onClick={() => setUsersOpen(true)}>Медиаторы</button>}<button onClick={onLogout}>Выйти</button>
     </div></header>
     <aside className="sidebar">
       <h2>Документы</h2>
@@ -315,18 +429,20 @@ export default function Editor({ project, user, onLogout }) {
         <button className="document-select" onClick={() => setSlot(entry.slot)}>
           <b>{entry.title}</b><small>{slot === entry.slot ? `Версия ${revision} · совместно` : `Версия ${entry.revision}`}</small>
         </button>
-        {(user.role === 'publisher' || user.role === 'admin') && <button className="document-rename"
+        {!isMediation && (user.role === 'publisher' || user.role === 'admin') && <button className="document-rename"
           aria-label={`Переименовать ${entry.title}`} title="Переименовать"
           onClick={() => renameDocument(entry)}>✎</button>}
       </div>)}
-      <div className="publish-card"><b>Публикация</b><p>В приложение попадает только опубликованный комплект.</p>
-        {(user.role === 'publisher' || user.role === 'admin') && <button className="primary" onClick={publish} disabled={publishing || !collaboration.ready}>{publishing ? 'Собираем PDF…' : 'Опубликовать 4 PDF'}</button>}
+      <div className="publish-card"><b>{isMediation ? 'Отдельная версия медиации' : 'Публикация'}</b><p>{isMediation ? 'Основные документы выставки не изменяются. Текст можно продолжить по личному доступу этой медиации.' : 'В приложение попадает только опубликованный комплект.'}</p>
+        {!isMediation && (user.role === 'publisher' || user.role === 'admin') && <button className="primary" onClick={publish} disabled={publishing || !collaboration.ready || automaticFlow.pending > 0}>{publishing ? 'Собираем PDF…' : 'Опубликовать 4 PDF'}</button>}
         {lastRelease && <small>Последний релиз: {lastRelease.releaseId}</small>}</div>
     </aside>
     <main className="workspace">
       <div className="toolbar">
         <button title="Отменить (Ctrl+Z)" onClick={collaboration.undo} disabled={!collaboration.canUndo}>↶</button>
         <button title="Повторить (Ctrl+Y)" onClick={collaboration.redo} disabled={!collaboration.canRedo}>↷</button>
+        {!isMediation && user.role === 'admin' && <button className={layoutEditing ? 'active-tool' : ''} onClick={() => { setLayoutEditing((value) => !value); setSelected(null) }}>{layoutEditing ? 'Завершить настройку макета' : 'Настроить макет'}</button>}
+        {canEditLayout && <>
         <span className="toolbar-divider" />
         <button onClick={() => add('text')} disabled={!collaboration.ready}>＋ Текст</button>
         <button onClick={() => { replaceImageRef.current = null; fileRef.current?.click() }} disabled={!collaboration.ready}>＋ Изображение</button>
@@ -346,17 +462,26 @@ export default function Editor({ project, user, onLogout }) {
         </select>
         <button onClick={createLayout} disabled={!collaboration.ready}>Новый редактируемый макет</button>
         <button onClick={applyTemplate} disabled={!collaboration.ready}>Вернуть общий шаблон</button>
-        {(user.role === 'publisher' || user.role === 'admin') && <button onClick={() => saveTemplate()} disabled={!collaboration.ready || templateSaving}>{templateSaving ? 'Синхронизация…' : 'Сохранить общий шаблон'}</button>}
+        <button onClick={() => saveTemplate()} disabled={!collaboration.ready || templateSaving || automaticFlow.pending > 0}>{templateSaving ? 'Синхронизация…' : 'Сохранить общий шаблон'}</button>
+        <span className="toolbar-divider" />
+        <span className="spread-indicator" title="Текущая страница определяет выбранный разворот">Разворот {activeSpread} из {spreadCount}</span>
+        <button onClick={() => moveActiveSpread(-1)} disabled={spreadSaving || activeSpread <= 1}>↑ Выше</button>
+        <button onClick={() => moveActiveSpread(1)} disabled={spreadSaving || activeSpread >= spreadCount}>↓ Ниже</button>
+        <button onClick={addSpread} disabled={spreadSaving}>{spreadSaving ? 'Изменяем…' : '＋ Разворот'}</button>
         {pageBackground && <label className="page-color" title="Цвет чистой страницы">Фон <input type="color" value={pageBackground.color || '#ffffff'} onChange={(event) => change(activePage, pageBackground.id, { color: event.target.value })} /></label>}
         <button onClick={openHistory}>История</button>
-        <button onClick={exportPdf} disabled={exporting || !collaboration.ready}>{exporting ? 'Готовим PDF…' : 'Скачать PDF'}</button>
-        {(user.role === 'publisher' || user.role === 'admin') && <button className="primary" onClick={publish} disabled={publishing || !collaboration.ready}>{publishing ? 'Собираем PDF…' : 'Опубликовать'}</button>}
+        </>}
+        <button onClick={exportPdf} disabled={exporting || !collaboration.ready || automaticFlow.pending > 0}>{exporting ? 'Готовим PDF…' : 'Скачать PDF'}</button>
+        {!isMediation && (user.role === 'publisher' || user.role === 'admin') && <button className="primary" onClick={publish} disabled={publishing || !collaboration.ready || automaticFlow.pending > 0}>{publishing ? 'Собираем PDF…' : 'Опубликовать'}</button>}
+        {isMediation && <button className="primary" disabled={archiving || !collaboration.synced || automaticFlow.pending > 0} onClick={archiveMediation}>{archiving ? 'Отправляем архив…' : 'Сохранить на NAS'}</button>}
+        {isMediation && user.role === 'admin' && <button disabled={archiving || !collaboration.synced || automaticFlow.pending > 0} onClick={promoteMediation}>Перенести в общий документ 4</button>}
+        {(automaticFlow.pending > 0 || automaticFlow.message) && <span role="status" aria-live="polite" className={`flow-state ${automaticFlow.overflow ? 'flow-overflow' : ''}`}>{automaticFlow.pending > 0 ? 'Автоматический перенос текста…' : automaticFlow.message}</span>}
         <span className="toolbar-spacer" /><span className={`status ${collaboration.status.includes('Офлайн') ? 'dirty' : ''}`}>{collaboration.status}</span>
       </div>
-      {item && <div className="properties"><b>{item.type === 'text' ? 'Текст' : item.type === 'image' ? 'Изображение' : adjustableHorizontal ? 'Горизонтальная линия' : adjustableVertical ? 'Вертикальная линия' : item.type === 'shape' ? 'Фигура' : 'Маска'}</b>
+      {canEditLayout && item && <div className="properties"><b>{item.type === 'text' ? 'Текст' : item.type === 'image' ? 'Изображение' : adjustableHorizontal ? 'Горизонтальная линия' : adjustableVertical ? 'Вертикальная линия' : item.type === 'shape' ? 'Фигура' : 'Маска'}</b>
         {item.type === 'text' && <>
           <label>Единый шрифт<select value={item.fontFamily || 'Times New Roman'} onChange={(event) => collaboration.changeAllText({ fontFamily: event.target.value })}>{FONT_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-          <label>Размер<input type="number" min="6" max="240" value={item.fontSize} onChange={(event) => change(selected.page, item.id, { fontSize: Number(event.target.value) })} /></label>
+          <label>Размер<input type="number" min="6" max="240" step="0.1" value={item.fontSize} onChange={(event) => change(selected.page, item.id, { fontSize: Number(event.target.value) })} /></label>
           <label title="Цвет текста">Текст<input type="color" value={item.color} onChange={(event) => change(selected.page, item.id, { color: event.target.value })} /></label>
           <button className={item.bold ? 'active-tool' : ''} onClick={() => change(selected.page, item.id, { bold: !item.bold })}><b>Ж</b></button>
           <button className={item.italic ? 'active-tool' : ''} onClick={() => change(selected.page, item.id, { italic: !item.italic })}><i>К</i></button>
@@ -383,11 +508,12 @@ export default function Editor({ project, user, onLogout }) {
           {adjustableVertical && <span className="property-hint">Перетаскивание двигает линию влево/вправо; круглые маркеры меняют её длину. Изменение повторяется на всех разворотах.</span>}
         </>}
         {item.type === 'cover' && <label>Цвет маски<input type="color" value={item.color} onChange={(event) => change(selected.page, item.id, { color: event.target.value })} /></label>}
-        {item.type !== 'page-background' && <button onClick={toggleItemLock} disabled={templateSaving}>{adjustableLine ? (item.locked ? 'Разблокировать и перемещать' : (templateSaving ? 'Синхронизация…' : 'Зафиксировать и синхронизировать')) : (item.locked ? 'Разблокировать положение' : 'Закрепить положение')}</button>}
+        {templateText && <span className="property-hint">Границы этого поля задаются линиями шаблона. При перемещении линий поле подстраивается автоматически.</span>}
+        {item.type !== 'page-background' && !templateText && <button onClick={toggleItemLock} disabled={templateSaving}>{adjustableLine ? (item.locked ? 'Разблокировать и перемещать' : (templateSaving ? 'Синхронизация…' : 'Зафиксировать и синхронизировать')) : (item.locked ? 'Разблокировать положение' : 'Закрепить положение')}</button>}
       </div>}
-      {(error || collaboration.error) && <div className="error-banner">{error || collaboration.error}</div>}
+      {(error || collaboration.error || automaticFlow.error) && <div className="error-banner">{error || collaboration.error || automaticFlow.error}</div>}
       {notice && !error && !collaboration.error && <div className="notice-banner">{notice}</div>}
-      {collaboration.ready ? <PdfPages pages={collaboration.pages} selected={selected} onSelect={select} onChange={change} /> : <div className="empty-state">Подключаем совместный документ…</div>}
+      {collaboration.ready ? <PdfPages pages={collaboration.pages} selected={selected} onSelect={select} onChange={change} onBodyPaste={automaticFlow.paste} canEditLayout={canEditLayout} bodyOnly={isMediation} /> : <div className="empty-state">Подключаем совместный документ…</div>}
     </main>
     {history && <div className="dialog-backdrop" onMouseDown={() => setHistory(null)}><section className="dialog history-dialog" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>История документа</h2><p>Восстановление станет общим для всех медиаторов</p></div><button onClick={() => setHistory(null)}>Закрыть</button></header><div className="history-list">{history.length ? history.map((entry) => <button key={entry.revision} onClick={() => restore(entry.revision)}><b>Версия {entry.revision}</b><span>{new Date(entry.createdAt).toLocaleString('ru-RU')}</span><small>{entry.createdBy}</small></button>) : <p>Сохранённых версий пока нет.</p>}</div></section></div>}
     {usersOpen && <UserDialog currentUser={user} onClose={() => setUsersOpen(false)} />}

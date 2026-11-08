@@ -8,8 +8,10 @@ from PIL import Image
 
 from app.editable_template import (
     PAGE_COUNT, PARAGRAPH_INDENT, SPREAD_SCANS, _best_original, blank_editable_layout,
-    import_legacy_pdf, indent_paragraphs, without_body_text,
+    import_legacy_pdf, indent_paragraphs, insert_blank_spread, move_spread, spread_count,
+    without_body_text,
 )
+from app.layout_geometry import align_template_text
 
 
 class ImagePart:
@@ -20,6 +22,27 @@ class ImagePart:
 
 
 class EditableTemplateTests(unittest.TestCase):
+    def test_fields_stay_inside_actual_contours_when_lines_move(self):
+        pages = blank_editable_layout()
+        for number, items in pages.items():
+            for item in items:
+                if item.get("role") not in {"body", "caption"}:
+                    continue
+                outline = next(value for value in items if value.get("role") == "outline" and
+                               value["cardIndex"] == item["cardIndex"])
+                self.assertGreater(item["x"], outline["x"])
+                self.assertLess(item["x"] + item["w"], outline["x"] + outline["w"])
+                self.assertGreater(item["y"], outline["y"] - .005)
+                self.assertLess(item["y"] + item["h"], outline["y"] + outline["h"])
+        line = next(item for item in pages["1"] if item.get("role") == "caption-divider")
+        line["y"] = .55
+        body = next(item for item in pages["1"] if item.get("role") == "body")
+        body["text"] = "Сохранённый экфрасис"
+        repaired = align_template_text(pages)
+        moved_body = next(item for item in repaired["1"] if item.get("role") == "body")
+        self.assertAlmostEqual(moved_body["y"] - .553, -.22 * moved_body['fontSize'] / 841.89)
+        self.assertEqual(moved_body["text"], body["text"])
+
     def test_paragraphs_receive_red_line_once(self):
         value = indent_paragraphs("Первый абзац\nВторой абзац\n\n" + PARAGRAPH_INDENT + "Третий")
         self.assertEqual(value, PARAGRAPH_INDENT + "Первый абзац\n" + PARAGRAPH_INDENT +
@@ -78,6 +101,24 @@ class EditableTemplateTests(unittest.TestCase):
         self.assertTrue(all(item["locked"] for item in dividers))
         self.assertTrue(all(item.get("placeholder", "") == "" for values in pages.values()
                             for item in values if item.get("type") == "text"))
+
+    def test_spreads_move_as_complete_pairs_and_blank_pair_can_be_inserted(self):
+        pages = blank_editable_layout()
+        marker = next(item for item in pages["25"] if item.get("role") == "body")
+        marker["text"] = "Текст разворота 13"
+        marker_id = marker["id"]
+        moved = move_spread(pages, 13, 14)
+        self.assertEqual(spread_count(moved), 14)
+        self.assertFalse(any(item.get("id") == marker_id for item in moved["25"] + moved["26"]))
+        self.assertTrue(any(item.get("id") == marker_id and item.get("text") == "Текст разворота 13"
+                            for item in moved["27"] + moved["28"]))
+        inserted = insert_blank_spread(moved, 14, "test-token")
+        self.assertEqual(spread_count(inserted), 15)
+        self.assertEqual(set(inserted), {str(value) for value in range(1, 31)})
+        self.assertTrue(all(item.get("missing") for item in inserted["29"] if item.get("role") == "scan"))
+        self.assertTrue(all(not item.get("text") for page in ("29", "30") for item in inserted[page]
+                            if item.get("type") == "text"))
+        self.assertTrue(any(item.get("id") == marker_id for item in inserted["27"] + inserted["28"]))
 
     def test_import_makes_scans_and_editable_unicode_text(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -63,14 +63,24 @@ class YandexDiskApiDelivery:
     def upload_release(self, release_dir: Path, manifest: dict) -> None:
         release_id = str(manifest["releaseId"])
         self._ensure_collection(self.root_parts + [release_id])
-        for item in manifest["files"]:
+        for item in [*manifest["files"], *manifest.get('attachments', [])]:
             source = release_dir / item["name"]
             if not source.is_file():
                 raise YandexDiskDeliveryError(f"Файл релиза не найден: {item['name']}")
-            self._put(self._path(release_id, item["name"]), source.read_bytes(), "application/pdf")
+            self._put(self._path(release_id, item["name"]), source.read_bytes(), "application/json" if source.suffix == '.json' else "application/pdf")
         payload = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
         self._put(self._path(release_id, "manifest.json"), payload, "application/json; charset=utf-8")
         self._put(self._path("current.json"), payload, "application/json; charset=utf-8")
+
+    def upload_mediation(self, folder: Path, manifest: dict) -> None:
+        parts = ['Медиации', str(manifest['projectId']), manifest['version']]
+        self._ensure_collection(self.root_parts + parts)
+        for item in manifest['files']:
+            source = folder / item['name']
+            self._put(self._path(*parts, item['name']), source.read_bytes(), 'application/pdf' if source.suffix == '.pdf' else 'application/json')
+        payload = json.dumps(manifest, ensure_ascii=False).encode('utf-8')
+        self._put(self._path(*parts, 'manifest.json'), payload, 'application/json')
+        self._put(self._path(*parts[:-1], 'latest.json'), payload, 'application/json')
 
 
 class YandexDiskDelivery:
@@ -116,12 +126,22 @@ class YandexDiskDelivery:
     def upload_release(self, release_dir: Path, manifest: dict) -> None:
         release_id = str(manifest["releaseId"])
         self._ensure_collection(self.root_parts + [release_id])
-        for item in manifest["files"]:
+        for item in [*manifest["files"], *manifest.get('attachments', [])]:
             source = release_dir / item["name"]
             if not source.is_file():
                 raise YandexDiskDeliveryError(f"Файл релиза не найден: {item['name']}")
-            self._put(self._url(release_id, item["name"]), source.read_bytes(), "application/pdf")
+            self._put(self._url(release_id, item["name"]), source.read_bytes(), "application/json" if source.suffix == '.json' else "application/pdf")
         payload = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
         self._put(self._url(release_id, "manifest.json"), payload, "application/json; charset=utf-8")
         self._put(self._url("current.json"), payload, "application/json; charset=utf-8")
+
+    def upload_mediation(self, folder: Path, manifest: dict) -> None:
+        parts = ['Медиации', str(manifest['projectId']), manifest['version']]
+        self._ensure_collection(self.root_parts + parts)
+        for item in manifest['files']:
+            source = folder / item['name']
+            self._put(self._url(*parts, item['name']), source.read_bytes(), 'application/pdf' if source.suffix == '.pdf' else 'application/json')
+        payload = json.dumps(manifest, ensure_ascii=False).encode('utf-8')
+        self._put(self._url(*parts, 'manifest.json'), payload, 'application/json')
+        self._put(self._url(*parts[:-1], 'latest.json'), payload, 'application/json')
 

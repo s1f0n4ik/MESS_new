@@ -2,7 +2,7 @@ import { Server } from '@hocuspocus/server'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import * as Y from 'yjs'
-import { pagesToJson, replacePages } from './model.js'
+import { allowsTextOnlyUpdate, pagesToJson, replacePages } from './model.js'
 
 const port = Number(process.env.COLLABORATION_PORT || 1234)
 const apiUrl = (process.env.STUDIO_API_URL || 'http://127.0.0.1:8081').replace(/\/$/, '')
@@ -65,6 +65,12 @@ const server = new Server({
   },
   async onLoadDocument({ documentName }) {
     return loadDocument(documentName)
+  },
+  async beforeSync({ document, context, type, payload }) {
+    if (type === 0 || (context?.user?.role === 'admin' && !context?.bodyOnly)) return
+    if (!allowsTextOnlyUpdate(document, payload, context?.bodyOnly)) {
+      throw new Error('Медиатор может изменять только текст готовых полей. Обновите страницу редактора.')
+    }
   },
   async onStoreDocument({ documentName, document, lastContext }) {
     await persistDocument(documentName, document, lastContext?.user?.email)

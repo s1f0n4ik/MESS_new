@@ -15,6 +15,22 @@ pnpm-debug.log*
 # Tauri / Rust
 desktop_old/src-tauri/target/
 **/target/
+backend/build/
+backend/dist/
+backend/data/
+frontend/src-tauri/binaries/
+
+# Generated documentation and transfer artifacts
+docs/manual_work/rendered*/
+docs/manual_work/runtime/
+docs/manual_work/backups/
+tmp/
+handover/**/server-backup/
+handover/**/deployed-web-source-v1/
+handover/**/desktop-installer/
+handover/**/manuals/
+*.tgz
+*.dump
 
 # Env / IDE / OS
 .env

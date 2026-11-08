@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "test": "node --test test/text-preview.test.js"
+    "test": "node --test test/body-flow.test.js test/layout-geometry.test.js test/paragraphs.test.js test/text-preview.test.js"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^6.0.1",

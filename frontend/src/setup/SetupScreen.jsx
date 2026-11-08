@@ -3,11 +3,12 @@ import { useEffect, useState } from 'react'
 const ROLES = ['pc1', 'pc2', 'pc3', 'pc4']
 
 export function SetupScreen() {
+  const startupError = new URLSearchParams(window.location.search).get('startupError')
   const [role, setRole] = useState('pc1')
   const [serve, setServe] = useState(true)
   const [server, setServer] = useState('http://localhost:8787')
   const [admin, setAdmin] = useState(true)
-  const [check, setCheck] = useState(null)
+  const [check, setCheck] = useState(startupError ? `Ошибка запуска координатора: ${startupError}` : null)
   const [busy, setBusy] = useState(false)
 
   // Координатор — это pc1 с сервером на localhost. Меняем одно — подстраиваем другое.
@@ -72,7 +73,9 @@ export function SetupScreen() {
           <span style={{ width: 200 }}>Адрес координатора</span>
           <input value={server} disabled={serve} onChange={(e) => setServer(e.target.value)}
             placeholder="192.168.1.50" style={{ ...input, flex: 1 }} />
-          <button onClick={testConnection} style={input}>Проверить</button>
+          <button onClick={testConnection} disabled={serve} style={input}>
+            {serve ? 'Проверится при запуске' : 'Проверить'}
+          </button>
         </div>
         {check && <div style={{ color: '#ccc', marginLeft: 212 }}>{check}</div>}
 

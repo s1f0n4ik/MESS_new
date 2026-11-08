@@ -84,6 +84,17 @@ class Release(Base):
     created_by: Mapped[str] = mapped_column(String(320))
 
 
+class Mediation(Base):
+    __tablename__ = "mediations"
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    source_project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    guest_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    source_release_id: Mapped[str] = mapped_column(String(80), default="")
+    created_by: Mapped[str] = mapped_column(String(320))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    archive_manifest_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
 cfg = settings()
 connect_args = {"check_same_thread": False} if cfg.database_url.startswith("sqlite") else {}
 engine = create_engine(cfg.database_url, connect_args=connect_args, pool_pre_ping=True)

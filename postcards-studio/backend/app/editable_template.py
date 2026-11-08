@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import io
+import uuid
 from collections import Counter
 from pathlib import Path
+from .layout_geometry import align_template_text, DEFAULT_FONT_SIZE, CAPTION_DIVIDER_Y
 
 import pymupdf as fitz
 from docx import Document as WordDocument
@@ -35,8 +37,8 @@ SPREAD_SCANS = (
     ((19, "6.21"), (14, "6.2")),
     ((7, "7"), (None, "7.1")),
     ((20, "7.21"), (15, "7.2")),
-    ((8, "8"), (None, "8.1")),
     ((21, "8.21"), (16, "8.2")),
+    ((8, "8"), (None, "8.1")),
 )
 CUSTOMER_SCAN_CELLS = {
     (0, 0): 1, (0, 2): 2, (0, 4): 3, (0, 5): 11, (0, 6): 4,
@@ -111,33 +113,79 @@ def blank_editable_layout(page_count: int = PAGE_COUNT) -> dict[str, list[dict]]
                     ),
                     _item(
                         f"caption-{page}-{column}", "text", x + 0.005, 0.393, inner_width, 0.078,
-                        text="", placeholder="", fontSize=16,
+                        text="", placeholder="", fontSize=DEFAULT_FONT_SIZE,
                         fontFamily="Times New Roman", color="#111111", background="transparent",
                         align="right", bold=False, italic=False, locked=True, role="caption",
                         cardIndex=card_index,
                     ),
                     _item(
-                        f"caption-divider-{page}-{column}", "shape", x, 0.473, column_width, 0.006,
+                        f"caption-divider-{page}-{column}", "shape", x, CAPTION_DIVIDER_Y, column_width, 0.006,
                         shape="line", fill="transparent", stroke="#231f20", strokeWidth=0.5,
                         strokeStyle="illustrator-dashed", locked=True, role="caption-divider", cardIndex=card_index,
                     ),
                     _item(
                         f"body-{page}-{column}", "text", x + 0.005, 0.489, inner_width, 0.473,
-                        text="", placeholder="", fontSize=15, fontFamily="Times New Roman",
-                        color="#111111", background="transparent", align="left", bold=False,
+                        text="", placeholder="", fontSize=DEFAULT_FONT_SIZE, fontFamily="Times New Roman",
+                        color="#111111", background="transparent", align="justify", bold=False,
                         italic=False, locked=True, role="body", cardIndex=card_index,
                     ),
                 ])
             else:
                 items.append(_item(
                     f"body-{page}-{column}", "text", x + 0.005, 0.025, inner_width, 0.935,
-                    text="", placeholder="", fontSize=15,
+                    text="", placeholder="", fontSize=DEFAULT_FONT_SIZE,
                     fontFamily="Times New Roman", color="#111111", background="transparent",
-                    align="left", bold=False, italic=False, locked=True, role="body",
+                    align="justify", bold=False, italic=False, locked=True, role="body",
                     cardIndex=card_index,
                 ))
         pages[str(page)] = items
-    return pages
+    return align_template_text(pages)
+
+
+def spread_count(pages: dict[str, list[dict]]) -> int:
+    numbers = sorted(int(value) for value in pages if str(value).isdigit() and int(value) > 0)
+    if not numbers or numbers != list(range(1, numbers[-1] + 1)) or numbers[-1] % 2:
+        raise ValueError("Документ должен состоять из последовательных двухстраничных разворотов")
+    return numbers[-1] // 2
+
+
+def move_spread(pages: dict[str, list[dict]], from_spread: int, to_spread: int) -> dict[str, list[dict]]:
+    """Move a whole two-page spread while keeping every item and text pair together."""
+    total = spread_count(pages)
+    if not 1 <= from_spread <= total or not 1 <= to_spread <= total:
+        raise ValueError(f"Номер разворота должен быть от 1 до {total}")
+    spreads = [[pages[str(index * 2 + 1)], pages[str(index * 2 + 2)]] for index in range(total)]
+    moved = spreads.pop(from_spread - 1)
+    spreads.insert(to_spread - 1, moved)
+    return {str(index + 1): items for index, items in enumerate(
+        (items for spread in spreads for items in spread)
+    )}
+
+
+def insert_blank_spread(pages: dict[str, list[dict]], after_spread: int,
+                        token: str | None = None) -> dict[str, list[dict]]:
+    """Insert an empty two-page spread without changing the neighbouring pairs."""
+    total = spread_count(pages)
+    if not 0 <= after_spread <= total:
+        raise ValueError(f"Позиция должна быть от 0 до {total}")
+    token = token or uuid.uuid4().hex[:12]
+    maximum_card = max((int(item.get("cardIndex") or 0) for items in pages.values() for item in items), default=0)
+    blank = blank_editable_layout(2)
+    for local_page, items in blank.items():
+        for item in items:
+            column = max(0, int(item.get("cardIndex") or 1) - 1)
+            item["id"] = f"added-{token}-{item['id']}"
+            if "cardIndex" in item:
+                item["cardIndex"] = maximum_card + column + 1
+            if item.get("role") == "scan":
+                item.update(sequence=None, scanCode="", missing=True, src="", sourceLabel="")
+            if item.get("type") == "text":
+                item["text"] = ""
+    ordered = [[pages[str(index * 2 + 1)], pages[str(index * 2 + 2)]] for index in range(total)]
+    ordered.insert(after_spread, [blank["1"], blank["2"]])
+    return {str(index + 1): items for index, items in enumerate(
+        (items for spread in ordered for items in spread)
+    )}
 
 
 def indent_paragraphs(text: str) -> str:

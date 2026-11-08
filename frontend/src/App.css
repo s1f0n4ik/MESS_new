@@ -154,3 +154,6 @@
 .pdf-library-editor__tabs button.is-active { background: #2d6; color: #000; font-weight: 700; }
 .pdf-library-editor__tabs button:disabled { opacity: 0.55; }
 .pdf-library-editor__document { flex: 1 1 auto; min-height: 0; }
+.mediation-panel { height: 100%; display: flex; flex-direction: column; background: #fff; }
+.mediation-frame { flex: 1; min-height: 0; width: 100%; border: 0; background: #fff; }
+.mediation-connection-note { padding: 3px 10px; background: #eee; color: #444; font-size: 12px; }

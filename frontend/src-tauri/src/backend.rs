@@ -25,10 +25,6 @@ const BACKEND_FILE: &str = "postcards-backend.exe";
 #[cfg(not(windows))]
 const BACKEND_FILE: &str = "postcards-backend";
 
-#[cfg(windows)]
-const EMBEDDED_BACKEND: &[u8] =
-    include_bytes!("../binaries/postcards-backend-x86_64-pc-windows-msvc.exe");
-
 static CHILD: Mutex<Option<Child>> = Mutex::new(None);
 
 fn hidden(cmd: &mut Command) -> &mut Command {
@@ -68,39 +64,24 @@ fn append_log(path: &Path, line: &str) {
     }
 }
 
-#[cfg(windows)]
-fn materialize_backend(base_dir: &Path) -> Result<PathBuf, String> {
-    let runtime_dir = base_dir.join("runtime");
-    std::fs::create_dir_all(&runtime_dir).map_err(|e| e.to_string())?;
-    let backend = runtime_dir.join(BACKEND_FILE);
-    let current = std::fs::read(&backend).unwrap_or_default();
-
-    if current != EMBEDDED_BACKEND {
-        let temp = runtime_dir.join("postcards-backend.new");
-        std::fs::write(&temp, EMBEDDED_BACKEND).map_err(|e| e.to_string())?;
-        if backend.exists() {
-            std::fs::remove_file(&backend).map_err(|e| e.to_string())?;
-        }
-        std::fs::rename(&temp, &backend).map_err(|e| e.to_string())?;
-    }
-    Ok(backend)
-}
-
-#[cfg(not(windows))]
-fn materialize_backend(_base_dir: &Path) -> Result<PathBuf, String> {
+fn bundled_backend() -> Result<PathBuf, String> {
     let exe_dir = std::env::current_exe()
         .map_err(|e| e.to_string())?
         .parent()
         .ok_or("no exe dir")?
         .to_path_buf();
-    Ok(exe_dir.join(BACKEND_FILE))
+    let backend = exe_dir.join(BACKEND_FILE);
+    if !backend.is_file() {
+        return Err(format!("серверный компонент не найден: {}", backend.display()));
+    }
+    Ok(backend)
 }
 
 /// `base_dir` — та же папка, где лежит launch.json (data_root() в lib.rs).
 /// Передаётся бэкенду через POSTCARDS_BASE_DIR, чтобы data/ и лог оказались
 /// в одном месте независимо от того, откуда запущен exe (target\debug или
 /// Program Files).
-pub fn start(base_dir: &Path) -> Result<(), String> {
+pub fn start(base_dir: &Path, resource_dir: &Path) -> Result<(), String> {
     let exe_dir: PathBuf = std::env::current_exe()
         .map_err(|e| e.to_string())?
         .parent()
@@ -123,11 +104,17 @@ pub fn start(base_dir: &Path) -> Result<(), String> {
     if port_open() {
         std::thread::sleep(Duration::from_millis(700));
     }
-    let backend = materialize_backend(base_dir)?;
+    let backend = bundled_backend()?;
+    let pdf_template = resource_dir
+        .join("pdfs-default")
+        .join("Postcards_2x2_template_14_blocks.pdf");
+    if !pdf_template.is_file() {
+        return Err(format!("PDF-шаблон не найден: {}", pdf_template.display()));
+    }
     append_log(
         &log_path,
         &format!(
-            "[launcher] embedded backend: {} ({} bytes)",
+            "[launcher] bundled backend: {} ({} bytes)",
             backend.display(),
             std::fs::metadata(&backend).map(|m| m.len()).unwrap_or(0)
         ),
@@ -140,28 +127,35 @@ pub fn start(base_dir: &Path) -> Result<(), String> {
         .stderr(Stdio::from(err))
         .env("POSTCARDS_BASE_DIR", base_dir)
         .env("POSTCARDS_PORT", PORT.to_string())
+        .env("POSTCARDS_PDF_TEMPLATE", &pdf_template)
         // Без консоли Python пишет в cp1251 и падает на «→»/эмодзи в логах.
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUNBUFFERED", "1");
     hidden(&mut cmd);
 
-    let child = cmd.spawn().map_err(|e| e.to_string())?;
-    *CHILD.lock().unwrap() = Some(child);
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
 
-    // Ждём порт до 20 с и пишем результат в тот же лог.
-    std::thread::spawn(move || {
-        let t0 = Instant::now();
-        while t0.elapsed() < Duration::from_secs(20) {
-            if port_open() {
-                append_log(&log_path, &format!("[launcher] backend up in {:?}", t0.elapsed()));
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(250));
+    // Не открываем рабочий экран, пока координатор действительно не готов.
+    // Раньше UI появлялся сразу и показывал только вечное «WS: offline».
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_secs(30) {
+        if port_open() {
+            append_log(&log_path, &format!("[launcher] backend up in {:?}", t0.elapsed()));
+            *CHILD.lock().unwrap() = Some(child);
+            return Ok(());
         }
-        append_log(&log_path, "[launcher] backend NOT up after 20s");
-    });
-    Ok(())
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            let message = format!("сервер завершился при запуске: {status}");
+            append_log(&log_path, &format!("[launcher] {message}"));
+            return Err(message);
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    append_log(&log_path, "[launcher] backend NOT up after 30s");
+    Err("координатор не запустился за 30 секунд; подробности в backend.log".into())
 }
 
 pub fn stop() {

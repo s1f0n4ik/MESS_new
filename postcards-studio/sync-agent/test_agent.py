@@ -39,6 +39,28 @@ class SyncAgentTests(unittest.TestCase):
             self.assertFalse(agent.sync_once())
 
 
+    def test_mediation_archive_is_verified_and_never_replaces_exhibition_release(self):
+        payloads={'editable.json':'{"pages":{}}'.encode(),'pdf4.pdf':b'%PDF-test'}
+        manifest={'projectId':42,'version':'r0000000001','files':[{'name':name,'size':len(data),
+            'sha256':hashlib.sha256(data).hexdigest()} for name,data in payloads.items()]}
+        def handler(request):
+            if request.url.path=='/api/sync/mediations':return httpx.Response(200,json=[manifest])
+            return httpx.Response(200,content=payloads[request.url.path.rsplit('/',1)[-1]])
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            (root/'current.json').write_text('{"releaseId":"keep-this-release"}','utf-8')
+            agent=Agent('http://studio','token',root,application='')
+            agent.client.close();agent.client=httpx.Client(transport=httpx.MockTransport(handler))
+            self.assertEqual(agent.sync_mediations(),1)
+            self.assertEqual(agent.sync_mediations(),0)
+            self.assertEqual(json.loads((root/'current.json').read_text())['releaseId'],'keep-this-release')
+            latest=root/'Медиации/42/latest.json'
+            self.assertEqual(json.loads(latest.read_text('utf-8'))['version'],'r0000000001')
+            manifest['version']='r0000000002';manifest['files'][0]['sha256']='bad-hash'
+            with self.assertRaises(RuntimeError):agent.sync_mediations()
+            self.assertEqual(json.loads(latest.read_text('utf-8'))['version'],'r0000000001')
+
+
 if __name__ == "__main__":
     unittest.main()
 

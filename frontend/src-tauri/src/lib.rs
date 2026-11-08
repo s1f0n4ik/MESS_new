@@ -180,14 +180,21 @@ fn is_live(app: &tauri::AppHandle, label: &str) -> bool {
 /// Старт бэкенда через собственный лаунчер (backend.rs): вывод уходит в файл,
 /// а не в пайп shell-плагина — забитый пайп подвешивал Python-процесс,
 /// и приложение видело «бэкенд есть, но не отвечает».
-fn start_backend() {
+fn start_backend(app: &tauri::AppHandle) -> Result<(), String> {
     let base = data_root();
-    match backend::start(&base) {
-        Ok(()) => println!(
+    let resources = app.path().resource_dir().map_err(|e| e.to_string())?;
+    match backend::start(&base, &resources) {
+        Ok(()) => {
+            println!(
             "[rs] backend launched, log: {}",
             base.join("backend.log").display()
-        ),
-        Err(e) => println!("[rs] backend start failed: {e}"),
+            );
+            Ok(())
+        }
+        Err(e) => {
+            println!("[rs] backend start failed: {e}");
+            Err(e)
+        }
     }
 }
 
@@ -517,7 +524,21 @@ pub fn run() {
             }
 
             if launch.is_server {
-                start_backend();
+                if let Err(error) = start_backend(&handle) {
+                    let query = format!("setup=1&startupError={}", urlencoding_lite(&error));
+                    let win = WebviewWindowBuilder::new(
+                        &handle,
+                        "main",
+                        WebviewUrl::App(format!("index.html?{}", query).into()),
+                    )
+                    .title("Postcards — ошибка запуска координатора")
+                    .inner_size(900.0, 700.0)
+                    .center()
+                    .zoom_hotkeys_enabled(false)
+                    .build()?;
+                    let _ = win.set_focus();
+                    return Ok(());
+                }
             } else {
                 println!("[rs] client mode, backend not started");
             }

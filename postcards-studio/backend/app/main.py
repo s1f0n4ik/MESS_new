@@ -15,22 +15,24 @@ from docx import Document as WordDocument
 from docx.oxml.ns import qn
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .db import (Document, DocumentRevision, DocumentTemplate, Project, ProjectTemplate, Release,
+from .db import (Document, DocumentRevision, DocumentTemplate, Mediation, Project, ProjectTemplate, Release,
                  SessionLocal, User, init_db, session_scope)
-from .pdf_renderer import publish_release, render_document
-from .editable_template import CUSTOMER_SCAN_CELLS
+from .pdf_renderer import TextOverflowError, _font_path, publish_release, render_document
+from .text_flow import split_for_fields
+from .editable_template import CUSTOMER_SCAN_CELLS, insert_blank_spread, move_spread, spread_count
+from .layout_geometry import align_template_text
 from .schemas import (CollaborationAuthBody, CollaborationSnapshotBody, CreateUserBody,
-                      LoginBody, RenameDocumentBody, RestoreBody, SaveDocumentBody,
-                      SaveTemplateBody)
-from .security import (current_user, decode_token, hash_password, make_token, publisher,
-                       sync_access, verify_password)
+                      AddSpreadBody, LoginBody, MoveSpreadBody, RenameDocumentBody, RestoreBody, SaveDocumentBody,
+                      SaveTemplateBody, TextFlowBody)
+from .security import (administrator, current_user, decode_token, hash_password, make_token, publisher,
+                       sync_access, verify_password, require_project_access)
 from .yandex_disk import YandexDiskApiDelivery, YandexDiskDelivery, YandexDiskDeliveryError
 
 
@@ -74,6 +76,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", cfg.p
 assets_root.mkdir(parents=True, exist_ok=True)
 releases_root.mkdir(parents=True, exist_ok=True)
 app.mount("/assets", StaticFiles(directory=str(assets_root)), name="assets")
+from .mediations import router as mediations_router
+app.include_router(mediations_router)
 
 
 def now() -> datetime:
@@ -110,7 +114,7 @@ def clean_pages(raw_pages: dict) -> dict:
             page_number = int(raw_number)
         except (TypeError, ValueError):
             continue
-        if not 1 <= page_number <= 28 or not isinstance(raw_items, list):
+        if not 1 <= page_number <= 200 or not isinstance(raw_items, list):
             continue
         cleaned = []
         for raw in raw_items[:500]:
@@ -177,7 +181,7 @@ def clean_pages(raw_pages: dict) -> dict:
             cleaned.append(item)
         if cleaned:
             pages[str(page_number)] = cleaned
-    return pages
+    return align_template_text(pages)
 
 
 class ProjectHub:
@@ -208,6 +212,33 @@ hub = ProjectHub()
 @app.get("/api/health")
 def health():
     return {"ok": True, "service": "postcards-studio", "version": "0.1.0"}
+
+
+WEB_FONT_FAMILIES = {"times": "Times New Roman", "arial": "Arial", "georgia": "Georgia", "courier": "Courier New"}
+WEB_FONT_VARIANTS = {"regular": (False, False), "bold": (True, False),
+                     "italic": (False, True), "bolditalic": (True, True)}
+
+
+@app.get("/api/fonts.css")
+def web_font_stylesheet():
+    rules = []
+    for slug, family in WEB_FONT_FAMILIES.items():
+        for variant, (bold, italic) in WEB_FONT_VARIANTS.items():
+            rules.append("@font-face{font-family:'Studio " + family + "';src:url('/api/fonts/" + slug + "/" + variant +
+                         "?v=20261026') format('truetype');font-weight:" + ("700" if bold else "400") +
+                         ";font-style:" + ("italic" if italic else "normal") + ";font-display:swap;}")
+    return Response("\n".join(rules), media_type="text/css")
+
+
+@app.get("/api/fonts/{family}/{variant}")
+def web_font(family: str, variant: str):
+    if family not in WEB_FONT_FAMILIES or variant not in WEB_FONT_VARIANTS:
+        raise HTTPException(404, "Шрифт не найден")
+    bold, italic = WEB_FONT_VARIANTS[variant]
+    path = _font_path(WEB_FONT_FAMILIES[family], bold, italic)
+    if not path:
+        raise HTTPException(404, "Шрифт не установлен на сервере")
+    return FileResponse(path, media_type="font/ttf", headers={"Cache-Control": "public, max-age=3600"})
 
 
 @app.post("/api/auth/login")
@@ -244,7 +275,7 @@ def create_user(body: CreateUserBody, admin: User = Depends(current_user),
 def users(admin: User = Depends(current_user), db: Session = Depends(session_scope)):
     if admin.role != "admin":
         raise HTTPException(403, "Только администратор видит пользователей")
-    return [user_view(value) for value in db.scalars(select(User).order_by(User.name, User.email)).all()]
+    return [user_view(value) for value in db.scalars(select(User).where(User.role != 'mediation').order_by(User.name, User.email)).all()]
 
 
 @app.delete("/api/users/{user_id}")
@@ -270,9 +301,15 @@ def delete_user(user_id: int, admin: User = Depends(current_user),
 
 @app.get("/api/projects")
 def projects(user: User = Depends(current_user), db: Session = Depends(session_scope)):
-    del user
+    values = db.scalars(select(Project).order_by(Project.id)).all()
+    if user.role == 'mediation':
+        ids = set(db.scalars(select(Mediation.project_id).where(Mediation.guest_user_id == user.id)))
+        values = [p for p in values if p.id in ids]
+    else:
+        ids = set(db.scalars(select(Mediation.project_id)))
+        values = [p for p in values if p.id not in ids]
     return [{"id": value.id, "name": value.name, "createdAt": iso(value.created_at)}
-            for value in db.scalars(select(Project).order_by(Project.id)).all()]
+            for value in values]
 
 
 @app.get("/api/projects/{project_id}")
@@ -283,7 +320,9 @@ def project(project_id: int, user: User = Depends(current_user), db: Session = D
         raise HTTPException(404, "Проект не найден")
     documents = db.scalars(select(Document).where(Document.project_id == project_id).order_by(Document.slot)).all()
     template_value = db.scalar(select(ProjectTemplate).where(ProjectTemplate.project_id == project_id))
-    return {"id": value.id, "name": value.name, "templateRevision": template_value.revision if template_value else 0,
+    mediation = db.get(Mediation, project_id)
+    return {"id": value.id, "name": value.name, "mediation": {"sourceProjectId": mediation.source_project_id} if mediation else None,
+            "templateRevision": template_value.revision if template_value else 0,
             "documents": [{key: doc_value[key] for key in ("id", "slot", "title", "revision", "updatedAt", "updatedBy")}
                           for item in documents for doc_value in [document_view(item)]]}
 
@@ -315,7 +354,7 @@ def require_collaboration_service(x_collaboration_secret: str = Header(default="
 
 def history_checkpoint_due(document: Document, db: Session) -> bool:
     latest = db.scalar(select(DocumentRevision).where(DocumentRevision.document_id == document.id)
-                       .order_by(DocumentRevision.created_at.desc()).limit(1))
+                       .order_by(DocumentRevision.created_at.desc(), DocumentRevision.id.desc()).limit(1))
     if not latest:
         return True
     created_at = latest.created_at
@@ -334,9 +373,27 @@ def add_history_checkpoint(document: Document, updated_by: str, db: Session) -> 
                                 content_json=document.content_json, created_by=updated_by))
 
 
+def merge_text_only(current_pages: dict, submitted_pages: dict, body_only=False) -> dict:
+    submitted = {str(page): {item.get("id"): item for item in items}
+                 for page, items in submitted_pages.items()}
+    result = json.loads(json.dumps(current_pages))
+    for page, items in result.items():
+        submitted_items = submitted.get(str(page), {})
+        for item in items:
+            candidate = submitted_items.get(item.get("id"))
+            if item.get("type") == "text" and (not body_only or item.get('role') == 'body') and candidate and candidate.get("type") == "text":
+                item["text"] = candidate.get("text", "")
+    return result
+
+
 async def store_collaboration_snapshot(document: Document, pages_value: dict, updated_by: str,
-                                       db: Session, checkpoint: bool = False) -> dict:
+                                       db: Session, checkpoint: bool = False,
+                                       allow_layout: bool = True) -> dict:
     pages = clean_pages(pages_value)
+    mediation = db.get(Mediation, document.project_id)
+    if not allow_layout or mediation:
+        current_pages = (json.loads(document.content_json).get("pages") or {})
+        pages = merge_text_only(current_pages, pages, body_only=bool(mediation))
     payload = json.dumps({"pages": pages}, ensure_ascii=False, separators=(",", ":"))
     if len(payload.encode("utf-8")) > 4 * 1024 * 1024:
         raise HTTPException(413, "Документ слишком большой")
@@ -368,9 +425,10 @@ def collaboration_auth(body: CollaborationAuthBody,
     if not user:
         raise HTTPException(401, "Пользователь не найден")
     project_id, slot, template_revision = parse_collaboration_name(body.documentName)
+    require_project_access(user, project_id, db)
     require_current_template_revision(db, project_id, template_revision)
     find_document(db, project_id, slot)
-    return {"user": user_view(user), "projectId": project_id, "slot": slot}
+    return {"user": user_view(user), "projectId": project_id, "slot": slot, "bodyOnly": bool(db.get(Mediation, project_id))}
 
 
 @app.get("/api/internal/collaboration/documents/{document_name}")
@@ -399,9 +457,11 @@ async def collaboration_store(document_name: str, body: CollaborationSnapshotBod
 async def collaboration_client_snapshot(project_id: int, slot: str, body: CollaborationSnapshotBody,
                                         user: User = Depends(current_user),
                                         db: Session = Depends(session_scope)):
+    require_current_template_revision(db, project_id, body.templateRevision or 0)
     document = find_document(db, project_id, slot)
     return await store_collaboration_snapshot(document, body.pages, user.email, db,
-                                              checkpoint=body.checkpoint)
+                                              checkpoint=body.checkpoint,
+                                              allow_layout=user.role == "admin")
 
 
 @app.get("/api/projects/{project_id}/documents/{slot}")
@@ -436,6 +496,10 @@ async def save_document(project_id: int, slot: str, body: SaveDocumentBody,
         raise HTTPException(409, detail={"message": "Документ изменён другим медиатором",
                                          "current": document_view(document)})
     pages = clean_pages(body.pages)
+    mediation = db.get(Mediation, project_id)
+    if user.role != "admin" or mediation:
+        current_pages = (json.loads(document.content_json).get("pages") or {})
+        pages = merge_text_only(current_pages, pages, body_only=bool(mediation))
     payload = json.dumps({"pages": pages}, ensure_ascii=False, separators=(",", ":"))
     if len(payload.encode("utf-8")) > 4 * 1024 * 1024:
         raise HTTPException(413, "Документ слишком большой")
@@ -458,7 +522,7 @@ def history(project_id: int, slot: str, user: User = Depends(current_user),
     del user
     document = find_document(db, project_id, slot)
     values = db.scalars(select(DocumentRevision).where(DocumentRevision.document_id == document.id)
-                        .order_by(DocumentRevision.created_at.desc()).limit(2000)).all()
+                        .order_by(DocumentRevision.created_at.desc(), DocumentRevision.id.desc()).limit(2000)).all()
     selected = []
     interval = timedelta(minutes=max(1, cfg.history_interval_minutes))
     for item in values:
@@ -489,7 +553,7 @@ def history_document(project_id: int, slot: str, revision: int,
 
 @app.post("/api/projects/{project_id}/documents/{slot}/history/{revision}/restore")
 async def restore_document(project_id: int, slot: str, revision: int, body: RestoreBody,
-                           user: User = Depends(current_user), db: Session = Depends(session_scope)):
+                           user: User = Depends(administrator), db: Session = Depends(session_scope)):
     document = find_document(db, project_id, slot)
     if body.baseRevision != document.revision:
         raise HTTPException(409, "Документ уже изменён другим медиатором")
@@ -512,7 +576,7 @@ async def restore_document(project_id: int, slot: str, revision: int, body: Rest
 
 @app.post("/api/projects/{project_id}/assets")
 async def upload_asset(project_id: int, file: UploadFile = File(...),
-                       user: User = Depends(current_user), db: Session = Depends(session_scope)):
+                       user: User = Depends(administrator), db: Session = Depends(session_scope)):
     del user
     if not db.get(Project, project_id):
         raise HTTPException(404, "Проект не найден")
@@ -531,7 +595,7 @@ async def upload_asset(project_id: int, file: UploadFile = File(...),
 
 @app.post("/api/projects/{project_id}/assets/import-docx")
 async def import_docx_assets(project_id: int, file: UploadFile = File(...),
-                             user: User = Depends(current_user), db: Session = Depends(session_scope)):
+                             user: User = Depends(administrator), db: Session = Depends(session_scope)):
     del user
     if not db.get(Project, project_id):
         raise HTTPException(404, "Проект не найден")
@@ -595,7 +659,7 @@ def normalize_global_template(pages: dict) -> dict:
     result = json.loads(json.dumps(pages))
     for items in result.values():
         for item in items:
-            if item.get("type") == "text":
+            if item.get("type") == "text" and item.get("role") != "caption":
                 item["text"] = ""
             if item.get("role") in TEMPLATE_LAYOUT_ROLES or item.get("type") == "page-background":
                 item["locked"] = True
@@ -616,14 +680,56 @@ def merge_global_template(current_pages: dict, template_pages: dict) -> dict:
             if existing:
                 for key in TEMPLATE_CONTENT_KEYS:
                     if key in existing:
-                        value[key] = existing[key]
+                        # Captions and scans form the common postcard material.
+                        # Blank legacy templates must not erase authored content.
+                        shared = (key == "text" and value.get("role") == "caption") or (
+                            key in {"src", "sourceLabel"} and value.get("role") == "scan")
+                        if not shared or not value.get(key):
+                            value[key] = existing[key]
             merged.append(value)
         merged.extend(item for item in current_items if item.get("id") not in template_ids)
         merged_pages[str(page_number)] = merged
     for page_number, items in current_pages.items():
         if str(page_number) not in merged_pages:
             merged_pages[str(page_number)] = items
-    return merged_pages
+    return align_template_text(merged_pages)
+
+
+def fill_missing_shared_material(template_pages: dict, document_pages: list[dict]) -> dict:
+    """Recover blank shared scans/captions from an existing complete document.
+
+    Identity comes from scanCode (or the legacy card index), never a free-text
+    caption or page number. Existing non-empty master content wins.
+    """
+    result = json.loads(json.dumps(template_pages))
+    sources = {}
+    caption_variants = {}
+    for pages in document_pages:
+        for items in pages.values():
+            scans = {item.get("cardIndex"): item for item in items if item.get("role") == "scan"}
+            for item in items:
+                if item.get("role") not in {"scan", "caption"}:
+                    continue
+                scan = scans.get(item.get("cardIndex"), {})
+                identity = scan.get("scanCode") or item.get("cardIndex")
+                key = (item.get("role"), identity)
+                record = sources.setdefault(key, {})
+                if item.get("role") == "caption" and item.get("text"):
+                    caption_variants.setdefault(key, set()).add(item["text"])
+                for field in ("src", "sourceLabel") if item.get("role") == "scan" else ("text",):
+                    if item.get(field) and not record.get(field):
+                        record[field] = item[field]
+    for items in result.values():
+        scans = {item.get("cardIndex"): item for item in items if item.get("role") == "scan"}
+        for item in items:
+            scan = scans.get(item.get("cardIndex"), {})
+            key = (item.get("role"), scan.get("scanCode") or item.get("cardIndex"))
+            for field, value in sources.get(key, {}).items():
+                if field == "text" and len(caption_variants.get(key, set())) > 1:
+                    continue
+                if not item.get(field):
+                    item[field] = value
+    return result
 
 
 @app.get("/api/projects/{project_id}/documents/{slot}/template")
@@ -638,6 +744,9 @@ def get_document_template(project_id: int, slot: str, user: User = Depends(curre
             raise HTTPException(404, "Общий шаблон ещё не создан")
         value = legacy
     template_pages = (json.loads(value.content_json).get("pages") or {})
+    documents = db.scalars(select(Document).where(Document.project_id == project_id).order_by(Document.slot)).all()
+    template_pages = fill_missing_shared_material(template_pages,
+        [json.loads(target.content_json).get("pages") or {} for target in documents])
     current_pages = (json.loads(document.content_json).get("pages") or {})
     return {"pages": merge_global_template(current_pages, template_pages),
             "templateRevision": getattr(value, "revision", 0),
@@ -646,10 +755,14 @@ def get_document_template(project_id: int, slot: str, user: User = Depends(curre
 
 @app.put("/api/projects/{project_id}/documents/{slot}/template")
 async def save_document_template(project_id: int, slot: str, body: SaveTemplateBody,
-                                 user: User = Depends(publisher), db: Session = Depends(session_scope)):
+                                 user: User = Depends(administrator), db: Session = Depends(session_scope)):
+    require_current_template_revision(db, project_id, body.templateRevision or 0)
     document = find_document(db, project_id, slot)
     pages = clean_pages(body.pages)
     template_pages = normalize_global_template(pages)
+    documents = db.scalars(select(Document).where(Document.project_id == project_id).order_by(Document.slot)).all()
+    template_pages = fill_missing_shared_material(template_pages,
+        [json.loads(target.content_json).get("pages") or {} for target in documents])
     payload = json.dumps({"pages": template_pages}, ensure_ascii=False, separators=(",", ":"))
     if len(payload.encode("utf-8")) > 4 * 1024 * 1024:
         raise HTTPException(413, "Шаблон слишком большой")
@@ -664,7 +777,6 @@ async def save_document_template(project_id: int, slot: str, body: SaveTemplateB
                                 updated_at=now(), updated_by=user.email)
         db.add(value)
         db.flush()
-    documents = db.scalars(select(Document).where(Document.project_id == project_id).order_by(Document.slot)).all()
     current_result = None
     changed_documents = []
     for target in documents:
@@ -691,12 +803,103 @@ async def save_document_template(project_id: int, slot: str, body: SaveTemplateB
             "updatedAt": iso(value.updated_at), "updatedBy": value.updated_by}
 
 
+async def update_all_spreads(project_id: int, template_revision: int, user: User, db: Session,
+                             operation, description: str) -> dict:
+    """Apply one structural spread operation atomically to the master and all four documents."""
+    require_current_template_revision(db, project_id, template_revision)
+    template = db.scalar(select(ProjectTemplate).where(ProjectTemplate.project_id == project_id).with_for_update())
+    if not template:
+        raise HTTPException(409, "Сначала сохраните общий шаблон")
+    documents = db.scalars(select(Document).where(Document.project_id == project_id)
+                           .order_by(Document.slot).with_for_update()).all()
+    if len(documents) != 4:
+        raise HTTPException(409, "Операция доступна только для полного комплекта из четырёх документов")
+    try:
+        template_pages = operation(json.loads(template.content_json).get("pages") or {})
+        changed = []
+        for document in documents:
+            pages = operation(json.loads(document.content_json).get("pages") or {})
+            payload = json.dumps({"pages": pages}, ensure_ascii=False, separators=(",", ":"))
+            document.revision += 1
+            document.content_json = payload
+            document.updated_at = now()
+            document.updated_by = user.email
+            db.add(DocumentRevision(document_id=document.id, revision=document.revision,
+                                    content_json=payload, created_by=f"{user.email} ({description})"))
+            changed.append((document.slot, document.revision))
+    except ValueError as reason:
+        db.rollback()
+        raise HTTPException(422, str(reason)) from reason
+    template.content_json = json.dumps({"pages": normalize_global_template(template_pages)},
+                                       ensure_ascii=False, separators=(",", ":"))
+    template.revision += 1
+    template.updated_at = now()
+    template.updated_by = user.email
+    db.commit()
+    for changed_slot, changed_revision in changed:
+        await hub.publish(project_id, {"type": "document.saved", "slot": changed_slot,
+                                       "revision": changed_revision, "updatedBy": user.email})
+    await hub.publish(project_id, {"type": "template.updated", "templateRevision": template.revision,
+                                   "updatedBy": user.email})
+    return {"saved": True, "templateRevision": template.revision,
+            "spreadCount": spread_count(template_pages), "updatedBy": user.email}
+
+
+@app.post("/api/projects/{project_id}/spreads/move")
+async def move_project_spread(project_id: int, body: MoveSpreadBody,
+                              user: User = Depends(administrator), db: Session = Depends(session_scope)):
+    return await update_all_spreads(
+        project_id, body.templateRevision, user, db,
+        lambda pages: move_spread(pages, body.fromSpread, body.toSpread),
+        f"перемещение разворота {body.fromSpread} → {body.toSpread}",
+    )
+
+
+@app.post("/api/projects/{project_id}/spreads/add")
+async def add_project_spread(project_id: int, body: AddSpreadBody,
+                             user: User = Depends(administrator), db: Session = Depends(session_scope)):
+    token = uuid.uuid4().hex[:12]
+    return await update_all_spreads(
+        project_id, body.templateRevision, user, db,
+        lambda pages: insert_blank_spread(pages, body.afterSpread, token),
+        f"добавление разворота после {body.afterSpread}",
+    )
+
+
 @app.get("/api/template")
 def template(user: User = Depends(current_user)):
     del user
     if not cfg.template_pdf.is_file():
         raise HTTPException(503, f"Шаблон не найден: {cfg.template_pdf}")
     return FileResponse(cfg.template_pdf, media_type="application/pdf", filename="Postcards-template.pdf")
+
+
+@app.post("/api/projects/{project_id}/documents/{slot}/text-flow")
+def distribute_body_text(project_id: int, slot: str, body: TextFlowBody,
+                         user: User = Depends(current_user), db: Session = Depends(session_scope)):
+    del user
+    require_current_template_revision(db, project_id, body.templateRevision)
+    document = find_document(db, project_id, slot)
+    pages = align_template_text(json.loads(document.content_json).get("pages") or {})
+    first = next((item for item in pages.get(str(body.page), [])
+                  if item.get("id") == body.itemId and item.get("role") == "body"), None)
+    if not first or body.page % 2 == 0:
+        raise HTTPException(400, "Выберите первое поле основного текста, под сканом")
+    second = next((item for item in pages.get(str(body.page + 1), [])
+                   if item.get("role") == "body" and item.get("cardIndex") == first.get("cardIndex")), None)
+    if not second:
+        raise HTTPException(400, "Не найдено связанное поле на следующем листе")
+    if body.fields:
+        # Read-only measurement of the currently displayed layout. A local
+        # admin edit need not wait for the debounced Yjs database checkpoint.
+        first = {**first, **body.fields[0].model_dump()}
+        second = {**second, **body.fields[1].model_dump()}
+    parts, overflow = split_for_fields(body.text, [first, second])
+    if any(len(part) > 30000 for part in parts):
+        raise HTTPException(422, "Слишком большой объём: текст оставлен в исходных полях без изменений")
+    return {"fields": [{"page": body.page, "id": first["id"], "text": parts[0]},
+                       {"page": body.page + 1, "id": second["id"], "text": parts[1]}],
+            "overflow": overflow, "characters": len(body.text)}
 
 
 @app.get("/api/projects/{project_id}/documents/{slot}/export.pdf")
@@ -707,7 +910,11 @@ def export_document(project_id: int, slot: str, user: User = Depends(current_use
     export_dir = cfg.storage_dir / "exports"
     export_dir.mkdir(parents=True, exist_ok=True)
     target = export_dir / f"{uuid.uuid4().hex}.pdf"
-    render_document(cfg.template_pdf, json.loads(document.content_json), assets_root, target)
+    try:
+        render_document(cfg.template_pdf, json.loads(document.content_json), assets_root, target)
+    except TextOverflowError as exc:
+        target.unlink(missing_ok=True)
+        raise HTTPException(422, str(exc)) from exc
     filename = f"{slot}-{document.revision}.pdf"
     return FileResponse(target, media_type="application/pdf", filename=filename,
                         background=BackgroundTask(target.unlink, missing_ok=True))
@@ -725,11 +932,14 @@ async def publish(project_id: int, user: User = Depends(publisher), db: Session 
     stamp = now()
     release_id = f"{stamp.strftime('%Y%m%dT%H%M%SZ')}-r{sequence:04d}-{uuid.uuid4().hex[:8]}"
     doc_values = [document_view(item) for item in documents]
-    manifest = publish_release(cfg.template_pdf, assets_root, releases_root, release_id, doc_values, {
-        "schemaVersion": 1, "releaseId": release_id, "sequence": sequence,
-        "projectId": project_id, "projectName": project_value.name,
-        "createdAt": iso(stamp), "createdBy": user.email,
-    })
+    try:
+        manifest = publish_release(cfg.template_pdf, assets_root, releases_root, release_id, doc_values, {
+            "schemaVersion": 1, "releaseId": release_id, "sequence": sequence,
+            "projectId": project_id, "projectName": project_value.name,
+            "createdAt": iso(stamp), "createdBy": user.email,
+        })
+    except TextOverflowError as exc:
+        raise HTTPException(422, str(exc)) from exc
     if cfg.yandex_delivery_enabled:
         if cfg.yandex_disk_oauth_token:
             delivery = YandexDiskApiDelivery(
@@ -793,7 +1003,11 @@ def sync_file(release_id: str, filename: str, access: None = Depends(sync_access
 @app.websocket("/ws/projects/{project_id}")
 async def project_socket(socket: WebSocket, project_id: int, token: str = ""):
     try:
-        decode_token(token)
+        payload = decode_token(token)
+        with SessionLocal() as db:
+            user = db.get(User, int(payload['sub']))
+            if not user: raise HTTPException(401, 'Пользователь не найден')
+            require_project_access(user, project_id, db)
     except HTTPException:
         await socket.close(code=4401)
         return
