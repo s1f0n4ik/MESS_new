@@ -28,7 +28,6 @@ tmp/
 handover/**/server-backup/
 handover/**/deployed-web-source-v1/
 handover/**/desktop-installer/
-handover/**/manuals/
 *.tgz
 *.dump
 
