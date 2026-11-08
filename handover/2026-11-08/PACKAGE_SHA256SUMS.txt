@@ -1,4 +1,5 @@
 61103f823eb18238e72b2674a3c4a90a118044c7a7e9c96e2b201f9487adae2a  ACCESS_CHECKLIST.md
+926a89ec75acce44456109af78b41e4189be3ab805e79439c77ff5f60b98241d  CUSTOMER_MESSAGE.md
 f6efea21c44ee0bd49354402edbb4b3df7899197ddbdbc6ad0842b544a7352b7  deployed-web-source-v1/.env.example
 87d51bc2d3eee23619f8c2bf1d93d0daabd1c71ece4c4b69c26b48cee7a33ce6  deployed-web-source-v1/.gitignore
 7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6  deployed-web-source-v1/backend/app/__init__.py
