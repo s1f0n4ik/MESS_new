@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -8,6 +9,7 @@ import shutil
 from pathlib import Path
 
 import pymupdf as fitz
+from PIL import Image, ImageOps
 from .layout_geometry import LINE_HEIGHT, align_template_text, body_line_height
 
 
@@ -127,6 +129,33 @@ def _color(value: str, default=(0.07, 0.07, 0.07)):
         return default
 
 
+def _cover_image_stream(image_path: Path, target_width: float, target_height: float) -> bytes:
+    """Return a centered crop matching CSS ``object-fit: cover`` semantics."""
+    if target_width <= 0 or target_height <= 0:
+        raise ValueError("Размер области изображения должен быть положительным")
+    with Image.open(image_path) as source:
+        image = ImageOps.exif_transpose(source)
+        source_width, source_height = image.size
+        if source_width <= 0 or source_height <= 0:
+            raise ValueError(f"Некорректный размер изображения: {image_path}")
+        target_ratio = target_width / target_height
+        source_ratio = source_width / source_height
+        if source_ratio > target_ratio:
+            crop_width = max(1, min(source_width, round(source_height * target_ratio)))
+            left = (source_width - crop_width) // 2
+            box = (left, 0, left + crop_width, source_height)
+        else:
+            crop_height = max(1, min(source_height, round(source_width / target_ratio)))
+            top = (source_height - crop_height) // 2
+            box = (0, top, source_width, top + crop_height)
+        cropped = image.crop(box)
+        if cropped.mode not in {"RGB", "RGBA", "L", "LA"}:
+            cropped = cropped.convert("RGBA" if "transparency" in cropped.info else "RGB")
+        output = io.BytesIO()
+        cropped.save(output, format="PNG")
+        return output.getvalue()
+
+
 def render_document(template: Path, content: dict, assets_root: Path, output: Path) -> None:
     if not template.is_file():
         raise FileNotFoundError(f"PDF-шаблон не найден: {template}")
@@ -172,7 +201,11 @@ def render_document(template: Path, content: dict, assets_root: Path, output: Pa
                 relative = source.split(marker, 1)[-1] if marker in source else source
                 image_path = (assets_root / relative).resolve()
                 if assets_root.resolve() in image_path.parents and image_path.is_file():
-                    page.insert_image(rect, filename=str(image_path), keep_proportion=item.get("fit") != "cover", overlay=True)
+                    if item.get("fit") == "cover":
+                        page.insert_image(rect, stream=_cover_image_stream(image_path, rect.width, rect.height),
+                                          keep_proportion=True, overlay=True)
+                    else:
+                        page.insert_image(rect, filename=str(image_path), keep_proportion=True, overlay=True)
             elif kind == "text":
                 background = item.get("background")
                 if background and background != "transparent":
