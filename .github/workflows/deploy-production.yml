@@ -3,6 +3,7 @@ name: Test and deploy Postcards Studio
 on:
   push:
     branches:
+      - main
       - production
   workflow_dispatch:
 
@@ -57,10 +58,12 @@ jobs:
         run: |
           cd frontend
           npm ci
+          npm test
           npm run build
 
   deploy:
     name: Deploy to production
+    if: github.ref == 'refs/heads/production' && vars.ENABLE_STUDIO_DEPLOY == 'true'
     needs: test
     runs-on: ubuntu-latest
     environment: production

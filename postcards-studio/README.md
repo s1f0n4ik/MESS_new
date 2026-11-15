@@ -1,5 +1,9 @@
 # Postcards Studio
 
+Canonical repository: https://github.com/DyadyaYasha/MESS_Inheritance .
+Direct NAS delivery, configurable HTTPS domain and snapshot migration are
+documented in [deploy/DIRECT_NAS.md](deploy/DIRECT_NAS.md).
+
 Отдельный веб-сервис для удалённого редактирования четырёх документов инсталляции.
 
 Пошаговая инструкция для ввода текста: [MEDIATOR_GUIDE.md](MEDIATOR_GUIDE.md).

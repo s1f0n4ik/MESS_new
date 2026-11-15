@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import hmac
 import re
 import shutil
@@ -18,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -33,7 +35,7 @@ from .schemas import (CollaborationAuthBody, CollaborationSnapshotBody, CreateUs
                       SaveTemplateBody, TextFlowBody)
 from .security import (administrator, current_user, decode_token, hash_password, make_token, publisher,
                        sync_access, verify_password, require_project_access)
-from .yandex_disk import YandexDiskApiDelivery, YandexDiskDelivery, YandexDiskDeliveryError
+from .delivery import create_delivery, DeliveryError
 
 
 cfg = settings()
@@ -207,11 +209,12 @@ class ProjectHub:
 
 
 hub = ProjectHub()
+publication_lock = asyncio.Lock()
 
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "postcards-studio", "version": "0.1.0"}
+    return {"ok": True, "service": "postcards-studio", "version": "0.1.0", "releaseId": cfg.release_id}
 
 
 WEB_FONT_FAMILIES = {"times": "Times New Roman", "arial": "Arial", "georgia": "Georgia", "courier": "Courier New"}
@@ -922,6 +925,13 @@ def export_document(project_id: int, slot: str, user: User = Depends(current_use
 
 @app.post("/api/projects/{project_id}/publish")
 async def publish(project_id: int, user: User = Depends(publisher), db: Session = Depends(session_scope)):
+    # One API worker publishes at a time: the remote pointer and DB sequence
+    # must describe the same last completed release while I/O runs in a thread.
+    async with publication_lock:
+        return await publish_locked(project_id, user, db)
+
+
+async def publish_locked(project_id: int, user: User, db: Session):
     project_value = db.get(Project, project_id)
     if not project_value:
         raise HTTPException(404, "Проект не найден")
@@ -933,32 +943,20 @@ async def publish(project_id: int, user: User = Depends(publisher), db: Session 
     release_id = f"{stamp.strftime('%Y%m%dT%H%M%SZ')}-r{sequence:04d}-{uuid.uuid4().hex[:8]}"
     doc_values = [document_view(item) for item in documents]
     try:
-        manifest = publish_release(cfg.template_pdf, assets_root, releases_root, release_id, doc_values, {
+        manifest = await run_in_threadpool(publish_release, cfg.template_pdf, assets_root, releases_root, release_id, doc_values, {
             "schemaVersion": 1, "releaseId": release_id, "sequence": sequence,
             "projectId": project_id, "projectName": project_value.name,
             "createdAt": iso(stamp), "createdBy": user.email,
         })
     except TextOverflowError as exc:
         raise HTTPException(422, str(exc)) from exc
-    if cfg.yandex_delivery_enabled:
-        if cfg.yandex_disk_oauth_token:
-            delivery = YandexDiskApiDelivery(
-                cfg.yandex_disk_api_url,
-                cfg.yandex_disk_oauth_token,
-                cfg.yandex_disk_path,
-            )
-        else:
-            delivery = YandexDiskDelivery(
-                cfg.yandex_webdav_url,
-                cfg.yandex_disk_username,
-                cfg.yandex_disk_app_password,
-                cfg.yandex_disk_path,
-            )
+    delivery = create_delivery(cfg)
+    if delivery:
         try:
-            delivery.upload_release(releases_root / release_id, manifest)
-        except YandexDiskDeliveryError as exc:
+            await run_in_threadpool(delivery.upload_release, releases_root / release_id, manifest)
+        except DeliveryError as exc:
             shutil.rmtree(releases_root / release_id, ignore_errors=True)
-            raise HTTPException(502, f"PDF собраны, но доставка в Яндекс Диск не выполнена: {exc}") from exc
+            raise HTTPException(502, f"PDF собраны, но доставка в архив не выполнена: {exc}") from exc
         finally:
             delivery.close()
     db.add(Release(id=release_id, project_id=project_id, sequence=sequence,

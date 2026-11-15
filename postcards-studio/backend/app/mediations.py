@@ -18,7 +18,7 @@ from .config import settings
 from .db import Document, DocumentRevision, Mediation, Project, ProjectTemplate, Release, User, session_scope, utcnow
 from .pdf_renderer import render_document, TextOverflowError, sha256
 from .security import administrator, current_user, hash_password, require_project_access, sync_access
-from .yandex_disk import YandexDiskApiDelivery, YandexDiskDelivery
+from .delivery import create_delivery
 
 router = APIRouter()
 
@@ -132,8 +132,8 @@ def archive_mediation(project_id: int, user=Depends(current_user), db: Session=D
             if staging.exists(): shutil.rmtree(staging)
     manifest = json.loads((folder / 'manifest.json').read_text('utf-8'))
     status, error = 'server-only', ''
-    if cfg.yandex_delivery_enabled:
-        delivery = YandexDiskApiDelivery(cfg.yandex_disk_api_url, cfg.yandex_disk_oauth_token, cfg.yandex_disk_path) if cfg.yandex_disk_oauth_token else YandexDiskDelivery(cfg.yandex_webdav_url, cfg.yandex_disk_username, cfg.yandex_disk_app_password, cfg.yandex_disk_path)
+    delivery = create_delivery(cfg)
+    if delivery:
         try: delivery.upload_mediation(folder, manifest); status = 'nas-sent'
         except Exception: status, error = 'retry-needed', 'Версия сохранена на сервере, но NAS недоступен. Повторите отправку.'
         finally: delivery.close()

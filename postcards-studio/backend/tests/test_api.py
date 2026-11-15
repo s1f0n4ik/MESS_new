@@ -412,6 +412,42 @@ class StudioApiTests(unittest.TestCase):
         self.assertEqual(unchanged['revision'],saved.json()['revision'])
 
 
+    def test_zx_publications_are_serialized_while_health_remains_responsive(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
+        from unittest.mock import patch
+        from app import main
+        with main.SessionLocal() as db:
+            project = main.Project(name='Concurrent publication check')
+            db.add(project); db.flush(); pid = project.id
+            for slot in ('pdf1', 'pdf2', 'pdf3', 'pdf4'):
+                db.add(main.Document(project_id=pid, slot=slot, title=slot))
+            db.commit()
+        entered, proceed = Event(), Event()
+        uploaded = []
+        class Delivery:
+            def upload_release(self, folder, manifest):
+                uploaded.append(manifest['sequence'])
+                if len(uploaded) == 1:
+                    entered.set()
+                    if not proceed.wait(5): raise RuntimeError('test did not release delivery')
+            def close(self): pass
+        def render(template, assets, releases, rid, docs, base):
+            return {**base, 'files': [], 'attachments': []}
+        with patch('app.main.publish_release', side_effect=render), patch('app.main.create_delivery', side_effect=lambda _: Delivery()):
+            with ThreadPoolExecutor(max_workers=2) as workers:
+                first = workers.submit(self.client.post, f'/api/projects/{pid}/publish', headers=self.headers)
+                try:
+                    self.assertTrue(entered.wait(3))
+                    second = workers.submit(self.client.post, f'/api/projects/{pid}/publish', headers=self.headers)
+                    self.assertEqual(self.client.get('/api/health').status_code, 200)
+                    self.assertEqual(uploaded, [1])
+                finally:
+                    proceed.set()
+                responses = [first.result(), second.result()]
+        self.assertEqual([r.status_code for r in responses], [200, 200])
+        self.assertEqual(uploaded, [1, 2])
+
     def test_zz_mediation_accounts_are_isolated_and_archive_keeps_editable_text(self):
         from unittest.mock import patch
         from app.editable_template import blank_editable_layout
@@ -467,7 +503,7 @@ class StudioApiTests(unittest.TestCase):
         self.assertTrue(any(f['text']=='Текст гостей медиации.' for f in proposal.json()['fields']))
         # A failed NAS delivery must not discard the editable server archive.
         with patch.object(main.cfg,'yandex_disk_path','/test'),patch.object(main.cfg,'yandex_disk_oauth_token','fake'),\
-             patch('app.mediations.YandexDiskApiDelivery.upload_mediation',side_effect=RuntimeError('offline')):
+             patch('app.delivery.YandexDiskApiDelivery.upload_mediation',side_effect=RuntimeError('offline')):
             failed=self.client.post(f'/api/mediations/{pid}/archive',headers=guest)
         self.assertEqual(failed.status_code,200)
         self.assertEqual(failed.json()['deliveryStatus'],'retry-needed')

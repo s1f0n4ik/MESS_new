@@ -20,12 +20,24 @@ class Settings(BaseSettings):
     history_interval_minutes: int = 15
     history_limit: int = 50
     environment: str = "development"
+    release_id: str = "development"
+    nas_webdav_url: str = ""
+    nas_username: str = ""
+    nas_password: str = ""
+    nas_path: str = ""
     yandex_webdav_url: str = "https://webdav.yandex.ru"
     yandex_disk_api_url: str = "https://cloud-api.yandex.net/v1/disk"
     yandex_disk_oauth_token: str = ""
     yandex_disk_username: str = ""
     yandex_disk_app_password: str = ""
     yandex_disk_path: str = ""
+
+    @property
+    def nas_delivery_enabled(self) -> bool:
+        values = (self.nas_webdav_url, self.nas_username, self.nas_password)
+        if any(values) and not all(values):
+            raise ValueError('Задайте STUDIO_NAS_WEBDAV_URL, STUDIO_NAS_USERNAME и STUDIO_NAS_PASSWORD')
+        return all(values)
 
     @property
     def yandex_delivery_enabled(self) -> bool:
@@ -37,6 +49,13 @@ class Settings(BaseSettings):
         )
 
     def validate_runtime(self) -> None:
+        if self.nas_delivery_enabled:
+            from urllib.parse import urlsplit
+            from .webdav import safe_parts
+            parsed = urlsplit(self.nas_webdav_url)
+            if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise RuntimeError('Для NAS требуется HTTPS URL без встроенного пароля и параметров')
+            safe_parts(self.nas_path)
         if self.environment.lower() != "production":
             return
         unsafe = {
