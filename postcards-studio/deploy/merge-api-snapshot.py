@@ -72,7 +72,10 @@ def main():
                                         'fromRevision': existing.revision, 'toRevision': document['revision']})
             if args.apply:
                 existing.title = document['title']
-                existing.content_json = json.dumps({'pages': document['pages']}, ensure_ascii=False)
+                # Match the API's compact serialization so a read-only Yjs
+                # bootstrap does not create a false document revision.
+                existing.content_json = json.dumps({'pages': document['pages']}, ensure_ascii=False,
+                                                   separators=(',', ':'))
                 existing.revision = document['revision']
                 existing.updated_by = document['updatedBy']
                 existing.updated_at = datetime.fromisoformat(document['updatedAt'])
