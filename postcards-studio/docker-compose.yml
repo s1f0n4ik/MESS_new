@@ -53,7 +53,7 @@ services:
     image: caddy:2.10-alpine
     restart: unless-stopped
     environment:
-      STUDIO_DOMAIN: ${STUDIO_DOMAIN:-mess-studio.ru}
+      STUDIO_DOMAIN: ${STUDIO_DOMAIN:-mess-studio.pro}
       STUDIO_LEGACY_ACME_HOST: ${STUDIO_LEGACY_ACME_HOST:-localhost}
     ports:
       - "80:80"

@@ -2,6 +2,9 @@
 
 Canonical repository: https://github.com/DyadyaYasha/MESS_Inheritance .
 The PDF proportional-crop fix is included from `8f4df1a`.
+Production domain: https://mess-studio.pro . Existing exhibition binaries need
+`POSTCARDS_STUDIO_URL=https://mess-studio.pro` when launched; newly built desktop
+backends use this domain by default. Existing account emails remain unchanged.
 
 Set `STUDIO_DOMAIN` and `STUDIO_PUBLIC_URL` for the new host. Caddy obtains and
 renews a Let's Encrypt certificate on ports 80/443. API, PostgreSQL and Yjs are

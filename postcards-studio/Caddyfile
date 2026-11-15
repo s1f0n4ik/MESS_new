@@ -14,7 +14,7 @@ http://{$STUDIO_LEGACY_ACME_HOST:localhost} {
   }
 }
 
-{$STUDIO_DOMAIN:mess-studio.ru} {
+{$STUDIO_DOMAIN:mess-studio.pro} {
   encode zstd gzip
   reverse_proxy web:80
 

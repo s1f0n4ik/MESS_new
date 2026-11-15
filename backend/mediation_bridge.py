@@ -18,7 +18,7 @@ class Selection(BaseModel):
 def create_router(data_dir: Path):
     router = APIRouter(prefix='/api/mediation')
     path = Path(data_dir) / 'mediation-selections.json'
-    studio = os.environ.get('POSTCARDS_STUDIO_URL', 'https://mess-studio.ru').rstrip('/')
+    studio = os.environ.get('POSTCARDS_STUDIO_URL', 'https://mess-studio.pro').rstrip('/')
     url = urlsplit(studio)
     if url.scheme != 'https' and not (url.scheme == 'http' and url.hostname in ('localhost', '127.0.0.1')):
         raise ValueError('POSTCARDS_STUDIO_URL должен использовать HTTPS')

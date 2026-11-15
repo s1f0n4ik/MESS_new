@@ -6,6 +6,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir --default-timeout=120 --retries 10 -r requirements.txt
+# Current Debian splits serif/sans italic styles out of the core package.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fonts-dejavu-extra \
+    && rm -rf /var/lib/apt/lists/*
 COPY app ./app
 COPY fonts ./fonts
 RUN mkdir -p /data
