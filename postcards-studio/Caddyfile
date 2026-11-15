@@ -2,6 +2,18 @@
   acme_ca https://acme-v02.api.letsencrypt.org/directory
 }
 
+# Optional webroot for an existing host certificate renewal (e.g. 3x-UI).
+# This HTTP-only host does not take over the panel's HTTPS listener.
+http://{$STUDIO_LEGACY_ACME_HOST:localhost} {
+  handle /.well-known/acme-challenge/* {
+    root * /legacy-acme
+    file_server
+  }
+  handle {
+    respond "Not found" 404
+  }
+}
+
 {$STUDIO_DOMAIN:mess-studio.ru} {
   encode zstd gzip
   reverse_proxy web:80

@@ -8,6 +8,14 @@ renews a Let's Encrypt certificate on ports 80/443. API, PostgreSQL and Yjs are
 internal Docker services. Existing 3x-UI ports/services must be inventoried and
 backed up before deployment; do not restart Docker or modify its VPN settings.
 
+If an existing panel's acme.sh renewal uses standalone HTTP-01 on port 80,
+switch that certificate's saved `Le_Webroot` to a dedicated host directory
+after backing up its configuration. Mount the directory read-only in Caddy
+using `STUDIO_LEGACY_ACME_WEBROOT` and set `STUDIO_LEGACY_ACME_HOST` to the
+certificate's IP/host. Verify an external HTTP challenge-file request before
+the next renewal. This avoids stopping Caddy or the panel for validation;
+the panel retains its certificate paths and existing reload hook.
+
 Configure secrets outside Git in the deployment's shared `.env`:
 
 ```

@@ -54,6 +54,7 @@ services:
     restart: unless-stopped
     environment:
       STUDIO_DOMAIN: ${STUDIO_DOMAIN:-mess-studio.ru}
+      STUDIO_LEGACY_ACME_HOST: ${STUDIO_LEGACY_ACME_HOST:-localhost}
     ports:
       - "80:80"
       - "443:443"
@@ -62,6 +63,7 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
+      - ${STUDIO_LEGACY_ACME_WEBROOT:-./acme-webroot}:/legacy-acme:ro
     depends_on:
       - web
 
